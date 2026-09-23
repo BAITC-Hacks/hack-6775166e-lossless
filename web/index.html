@@ -55,7 +55,7 @@
             </div>
             <div class="action-row">
               <button id="submit-plan" class="primary-button" type="button"><span>Рассчитать сценарий</span><span aria-hidden="true">↗</span></button>
-              <button id="suggest-plan" class="secondary-button" type="button"><span>Предложить план</span><span aria-hidden="true">✦</span></button>
+              <button id="suggest-plan" class="secondary-button" type="button"><span>Сравнить с рекомендацией</span><span aria-hidden="true">✦</span></button>
             </div>
             <p id="optimizer-error" class="optimizer-error" role="alert" hidden></p>
             <p class="submit-note">Расчёт учитывает лаги, синергии, конфликты и показатели всех районов.</p>
@@ -86,12 +86,20 @@
             <button id="recommend-change" class="secondary-button compare-trigger" type="button">Найти лучшую замену одного решения <span aria-hidden="true">↗</span></button>
             <div id="comparison-error" class="optimizer-error" role="alert" hidden></div>
             <article id="comparison-panel" class="result-card comparison-panel" aria-live="polite" hidden>
-              <div class="card-head"><h3>Сравнение двух планов</h3><span>ОДНА ЗАМЕНА</span></div>
+              <div class="card-head"><h3>Одна замена</h3><span>ЛУЧШИЙ СОСЕДНИЙ ПЛАН</span></div>
               <div id="comparison-scores" class="comparison-scores"></div>
               <p id="comparison-swap" class="comparison-swap"></p>
               <div id="comparison-explanation" class="explanation"></div>
               <button id="apply-change" class="primary-button" type="button" hidden><span>Применить замену</span><span aria-hidden="true">↗</span></button>
             </article>
+            <section id="comparison" class="comparison" aria-labelledby="comparison-title" hidden>
+              <div class="comparison-heading"><div><p class="eyebrow">РЕКОМЕНДАЦИЯ ОПТИМИЗАТОРА</p><h3 id="comparison-title">Ваш план и лучший найденный</h3></div><span id="comparison-gap" class="comparison-gap"></span></div>
+              <div id="comparison-summary" class="comparison-summary"></div>
+              <p class="comparison-note">Баллы районов; в скобках — изменение к исходному состоянию. Разница показывает рекомендацию относительно вашего плана.</p>
+              <div class="comparison-table-wrap"><table class="comparison-table"><thead><tr><th scope="col">Район</th><th scope="col">Ваш план</th><th scope="col">Рекомендация</th><th scope="col">Разница</th></tr></thead><tbody id="comparison-districts"></tbody></table></div>
+              <div id="comparison-tradeoffs" class="comparison-tradeoffs"></div>
+              <div class="comparison-actions"><div><strong>Предложенные меры</strong><p id="comparison-measures"></p></div><button id="adopt-plan" class="secondary-button" type="button">Применить рекомендацию</button></div>
+            </section>
           </div>
         </section>
       </div>
