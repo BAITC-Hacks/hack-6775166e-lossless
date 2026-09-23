@@ -316,6 +316,13 @@
   .city3d__brand-name { max-width: 94px; line-height: 1.2; }
 }
 
+@media (max-width: 360px) {
+  .city3d__controls {
+    top: 239px;
+    grid-template-columns: repeat(3, 38px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .city3d__district { transition: none; }
 }
