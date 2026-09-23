@@ -1,7 +1,7 @@
 """Verify real AI explanations without printing credentials or provider errors.
 
 No arguments preserves the single-plan check. Each requested scenario makes at
-most one model request; configuration inspection makes none. Uses only stdlib.
+most one model request; configuration inspection makes none. NVIDIA uses the optional OpenAI SDK.
 """
 
 import argparse
@@ -114,6 +114,7 @@ def _run(scenario, current, proposed, settings):
         "http_status": http_status,
         **controls,
         "latency_ms": latency_ms,
+        "elapsed_seconds": round(latency_ms / 1000, 3),
         "checked_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "text": answer.get("text"),
     }

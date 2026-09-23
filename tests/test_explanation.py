@@ -1,15 +1,19 @@
 import json
 import os
+import runpy
+import sys
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
+from io import StringIO
 from copy import deepcopy
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from unittest.mock import patch
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from src import explanation
-from src.explanation import explain, explain_comparison
+from src.explanation import explain, explain_comparison, model_settings
 
 
 RESULT = {
@@ -43,6 +47,24 @@ class FakeResponse:
         return json.dumps(self.value).encode()
 
 
+class FakeModelError(Exception):
+    pass
+
+
+def fake_nvidia_sdk(content=None, error=None):
+    client = MagicMock()
+    if error is not None:
+        client.chat.completions.create.side_effect = error
+    else:
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=content, refusal=None))]
+        )
+    module = ModuleType("openai")
+    module.OpenAI = MagicMock(return_value=client)
+    module.OpenAIError = FakeModelError
+    return module, client
+
+
 class ExplanationTests(unittest.TestCase):
     def setUp(self):
         self.contexts = ExitStack()
@@ -55,6 +77,9 @@ class ExplanationTests(unittest.TestCase):
         self.temp = self.contexts.enter_context(tempfile.TemporaryDirectory())
         self.dotenv = Path(self.temp) / ".env"
         self.contexts.enter_context(patch("src.explanation._DOTENV_PATH", self.dotenv, create=True))
+        sdk, client = fake_nvidia_sdk(error=AssertionError("Unit tests must never call a real model"))
+        self.contexts.enter_context(patch.dict(sys.modules, {"openai": sdk}))
+        self.no_sdk_network = client.chat.completions.create
         self.no_network = self.contexts.enter_context(patch(
             "src.explanation.request.urlopen",
             side_effect=AssertionError("Unit tests must never call a real model"),
@@ -147,11 +172,11 @@ class ExplanationTests(unittest.TestCase):
     def test_nvidia_has_priority_and_selects_only_verified_facts(self):
         chosen = {"strengths": ["strength_synergy"], "risks": ["risk_negative"],
                   "tradeoffs": ["tradeoff_lag"]}
-        response = {"choices": [{"message": {"content": json.dumps(chosen)}}]}
+        sdk, client = fake_nvidia_sdk("```json\n" + json.dumps(chosen) + "\n```")
         env = {"NVIDIA_API_KEY": "test-nvidia-key", "NVIDIA_MODEL": "explicit/model-id",
                "OPENAI_API_KEY": "test-openai-key", "OPENAI_MODEL": "other-model"}
-        with patch.dict(os.environ, env), \
-                patch("src.explanation.request.urlopen", return_value=FakeResponse(response)) as mock_open:
+        with patch.dict(os.environ, env), patch.dict(sys.modules, {"openai": sdk}), \
+                patch("src.explanation.request.urlopen") as mock_open:
             answer = explain(RESULT)
         self.assertEqual(answer["source"], "model")
         self.assertEqual(answer["provider"], "nvidia")
@@ -159,23 +184,28 @@ class ExplanationTests(unittest.TestCase):
         self.assertIn("T2 (40,00)", answer["text"])
         self.assertIn("95 из бюджета 100", answer["text"])
         self.assertNotIn("56,54", answer["text"])
-        req = mock_open.call_args.args[0]
-        sent = json.loads(req.data)
-        self.assertEqual(req.full_url, "https://integrate.api.nvidia.com/v1/chat/completions")
+        mock_open.assert_not_called()
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["base_url"],
+                         "https://integrate.api.nvidia.com/v1")
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["timeout"], 8)
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["max_retries"], 0)
+        sent = client.chat.completions.create.call_args.kwargs
         self.assertEqual(sent["model"], "explicit/model-id")
+        self.assertEqual(sent["messages"][0]["role"], "system")
         self.assertEqual(sent["max_tokens"], 512)
         self.assertFalse(sent["stream"])
-        mock_open.assert_called_once()
-        self.assertEqual(sent["messages"][0]["role"], "system")
-        self.assertEqual(mock_open.call_args.kwargs["timeout"], 8)
+        client.chat.completions.create.assert_called_once()
+        client.close.assert_called_once()
 
-    def test_nvidia_timeout_falls_back_without_exposing_key(self):
+    def test_nvidia_sdk_error_falls_back_without_exposing_key(self):
+        sdk, _ = fake_nvidia_sdk(error=FakeModelError("secret-key"))
         with patch.dict(os.environ, {"NVIDIA_API_KEY": "secret-key", "NVIDIA_MODEL": "model-id",
                                   "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}), \
-                patch("src.explanation.request.urlopen", side_effect=TimeoutError("slow")):
-            answer = explain(RESULT)
+                patch.dict(sys.modules, {"openai": sdk}):
+            answer = explain(RESULT, diagnostics=True)
         self.assertEqual(answer["source"], "computed_facts")
         self.assertEqual(answer["reason"], "model_unavailable")
+        self.assertEqual(answer["error_type"], "FakeModelError")
         self.assertNotIn("secret-key", str(answer))
 
     def test_nvidia_key_without_model_never_calls_api(self):
@@ -208,14 +238,14 @@ class ExplanationTests(unittest.TestCase):
         added = [{"measure_id": "M3", "district": "Нура"}]
         chosen = {"strengths": ["score_change"], "risks": ["more_cost"],
                   "tradeoffs": ["measure_change"]}
-        response = {"choices": [{"message": {"content": json.dumps(chosen)}}]}
+        sdk, client = fake_nvidia_sdk(json.dumps(chosen))
         with patch.dict(os.environ, {"NVIDIA_API_KEY": "test-key", "NVIDIA_MODEL": "explicit/model",
                                   "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}), \
-                patch("src.explanation.request.urlopen", return_value=FakeResponse(response)) as mock_open:
+                patch.dict(sys.modules, {"openai": sdk}):
             answer = explain_comparison(current, proposed, removed, added)
         self.assertEqual(answer["source"], "model")
         self.assertIn("M5/Сарыарка на M3/Нура", answer["text"])
-        sent = json.loads(mock_open.call_args.args[0].data)
+        sent = client.chat.completions.create.call_args.kwargs
         evidence = json.loads(sent["messages"][1]["content"])["calculated_evidence"]
         self.assertEqual(evidence["current"]["deltas"], current["deltas"])
         self.assertEqual(evidence["current"]["contributions"], current["contributions"])
@@ -297,11 +327,21 @@ class ExplanationTests(unittest.TestCase):
             ("nvidia", {"choices": [{"finish_reason": "stop", "message": {"content": None}}]}),
             ("nvidia", []),
         ]
+        def attributes(value):
+            if isinstance(value, dict):
+                return SimpleNamespace(**{key: attributes(item) for key, item in value.items()})
+            if isinstance(value, list):
+                return [attributes(item) for item in value]
+            return value
+
         for provider, response in cases:
+            sdk, client = fake_nvidia_sdk()
+            client.chat.completions.create.return_value = attributes(response)
             with self.subTest(provider=provider, response=response), patch.dict(os.environ, {
                     provider.upper() + "_API_KEY": "test-key",
                     provider.upper() + "_MODEL": "test-model"}), \
-                    patch("src.explanation.request.urlopen", return_value=FakeResponse(response)):
+                    patch("src.explanation.request.urlopen", return_value=FakeResponse(response)), \
+                    patch.dict(sys.modules, {"openai": sdk}):
                 answer = explain(RESULT, diagnostics=True)
             self.assertEqual(answer["source"], "computed_facts")
             self.assertEqual(answer["error_code"], "invalid_model_output")
@@ -321,13 +361,12 @@ class ExplanationTests(unittest.TestCase):
         ]
         for error, code, status in cases:
             with self.subTest(code=code, status=status), patch.dict(os.environ, {
-                    "NVIDIA_API_KEY": secret, "NVIDIA_MODEL": "configured-model",
-                    "OPENAI_API_KEY": "fallback-key", "OPENAI_MODEL": "fallback-model"}), \
+                    "OPENAI_API_KEY": secret, "OPENAI_MODEL": "configured-model"}), \
                     patch("src.explanation.request.urlopen", side_effect=error) as mock_open:
                 answer = explain(RESULT, diagnostics=True)
             self.assertEqual(answer["source"], "computed_facts")
             self.assertEqual(answer["reason"], "model_unavailable")
-            self.assertEqual(answer["provider"], "nvidia")
+            self.assertEqual(answer["provider"], "openai")
             self.assertEqual(answer["model"], "configured-model")
             self.assertEqual(answer["error_code"], code)
             if status is not None:
@@ -337,7 +376,7 @@ class ExplanationTests(unittest.TestCase):
             mock_open.assert_called_once()
 
     def test_default_failure_contract_does_not_include_diagnostics(self):
-        with patch.dict(os.environ, {"NVIDIA_API_KEY": "secret", "NVIDIA_MODEL": "model"}), \
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "secret", "OPENAI_MODEL": "model"}), \
                 patch("src.explanation.request.urlopen", side_effect=TimeoutError("secret")):
             answer = explain(RESULT)
         self.assertEqual(set(answer), {"text", "source", "reason"})
@@ -351,10 +390,10 @@ class ExplanationTests(unittest.TestCase):
         before = deepcopy((current, proposed, removed, added))
         chosen = {"strengths": ["score_change"], "risks": ["more_cost"],
                   "tradeoffs": ["measure_change"]}
-        with patch.dict(os.environ, {"NVIDIA_API_KEY": "test-key", "NVIDIA_MODEL": "test-model"}), \
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "test-model"}), \
                 patch("src.explanation.request.urlopen", side_effect=[
-                    FakeResponse(self.nvidia_response(json.dumps(self.selection()))),
-                    FakeResponse(self.nvidia_response(json.dumps(chosen))),
+                    FakeResponse(self.openai_response(json.dumps(self.selection()))),
+                    FakeResponse(self.openai_response(json.dumps(chosen))),
                 ]) as mock_open:
             self.assertEqual(explain(current)["source"], "model")
             self.assertEqual(explain_comparison(current, proposed, removed, added)["source"], "model")
@@ -403,23 +442,181 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(settings["NVIDIA_API_KEY"], "environment-key")
         self.assertEqual(settings["NVIDIA_MODEL"], "model")
 
-    def test_nvidia_transport_does_not_require_openai_sdk(self):
+    def test_openai_transport_does_not_require_openai_sdk(self):
         import builtins
         original_import = builtins.__import__
 
         def no_sdk(name, *args, **kwargs):
             if name == "openai" or name.startswith("openai."):
-                raise AssertionError("NVIDIA transport must work without the optional SDK")
+                raise AssertionError("OpenAI transport must work without the optional SDK")
             return original_import(name, *args, **kwargs)
 
-        with patch.dict(os.environ, {"NVIDIA_API_KEY": "test-key", "NVIDIA_MODEL": "test-model"}), \
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "test-model"}), \
                 patch("builtins.__import__", side_effect=no_sdk), \
                 patch("src.explanation.request.urlopen", return_value=FakeResponse(
-                    self.nvidia_response(json.dumps(self.selection())))):
+                    self.openai_response(json.dumps(self.selection())))):
             answer = explain(RESULT)
         self.assertEqual(answer["source"], "model")
-        self.assertEqual(answer["provider"], "nvidia")
+        self.assertEqual(answer["provider"], "openai")
 
+
+    def test_model_settings_reads_env_file_and_process_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text(
+                "# local model settings\n"
+                "export NVIDIA_API_KEY='file$key'\n"
+                'NVIDIA_MODEL="mistralai/mistral-nemotron"\n'
+                "OPENAI_API_KEY=other#key # comment\n"
+                "PORT=9000\n", encoding="utf-8")
+            with patch("src.explanation._DOTENV_PATH", env_file), \
+                    patch.dict(os.environ, {}, clear=True):
+                settings = model_settings()
+            self.assertEqual(settings["NVIDIA_API_KEY"], "file$key")
+            self.assertEqual(settings["NVIDIA_MODEL"], "mistralai/mistral-nemotron")
+            self.assertEqual(settings["OPENAI_API_KEY"], "other#key")
+            self.assertNotIn("PORT", settings)
+            with patch("src.explanation._DOTENV_PATH", env_file), \
+                    patch.dict(os.environ, {"NVIDIA_API_KEY": ""}, clear=True):
+                self.assertEqual(model_settings()["NVIDIA_API_KEY"], "")
+
+
+    def test_check_model_reads_env_file_before_preflight(self):
+        chosen = {"strengths": ["strength_score"], "risks": ["risk_residual"],
+                  "tradeoffs": ["tradeoff_budget"]}
+        sdk, _ = fake_nvidia_sdk(json.dumps(chosen))
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "check-model.py"
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text("NVIDIA_API_KEY=file-key\nNVIDIA_MODEL=file-model\n", encoding="utf-8")
+            with patch("src.explanation._DOTENV_PATH", env_file), \
+                    patch.dict(os.environ, {}, clear=True), \
+                    patch.dict(sys.modules, {"explanation": explanation, "openai": sdk}):
+                script = runpy.run_path(str(script_path), run_name="check_model_test")
+                output = StringIO()
+                with redirect_stdout(output):
+                    exit_code = script["main"]([])
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["source"], "model")
+        self.assertEqual(report["provider"], "nvidia")
+        self.assertNotIn("file-key", output.getvalue())
+
+
+    def test_check_model_comparison_reads_env_file_before_preflight(self):
+        chosen = {"strengths": ["score_change"], "risks": ["weakest"],
+                  "tradeoffs": ["measure_change"]}
+        sdk, _ = fake_nvidia_sdk(json.dumps(chosen))
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "check-model-comparison.py"
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text("NVIDIA_API_KEY=file-key\nNVIDIA_MODEL=file-model\n", encoding="utf-8")
+            with patch("src.explanation._DOTENV_PATH", env_file), \
+                    patch.dict(os.environ, {}, clear=True), \
+                    patch.dict(sys.modules, {"explanation": explanation, "openai": sdk}):
+                script = runpy.run_path(str(script_path), run_name="check_model_comparison_test")
+                output = StringIO()
+                with redirect_stdout(output):
+                    exit_code = script["main"]()
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["source"], "model")
+        self.assertEqual(report["provider"], "nvidia")
+        self.assertNotIn("file-key", output.getvalue())
+
+
+    def test_comparison_uses_env_file_for_nvidia(self):
+        chosen = {"strengths": ["score_change"], "risks": ["weakest"],
+                  "tradeoffs": ["measure_change"]}
+        sdk, _ = fake_nvidia_sdk(json.dumps(chosen))
+        proposed = deepcopy(RESULT)
+        proposed.update(score=57.20556, cost=100, remaining_budget=0)
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text("NVIDIA_API_KEY=file-key\nNVIDIA_MODEL=file-model\n", encoding="utf-8")
+            with patch("src.explanation._DOTENV_PATH", env_file), \
+                    patch.dict(os.environ, {}, clear=True), patch.dict(sys.modules, {"openai": sdk}):
+                answer = explain_comparison(
+                    RESULT, proposed,
+                    [{"measure_id": "M5", "district": "Сарыарка"}],
+                    [{"measure_id": "M3", "district": "Нура"}])
+        self.assertEqual(answer["source"], "model")
+        self.assertEqual(answer["provider"], "nvidia")
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["api_key"], "file-key")
+        self.assertEqual(sdk.OpenAI.return_value.chat.completions.create.call_args.kwargs["model"],
+                         "file-model")
+
+
+    def test_nvidia_without_optional_sdk_uses_fallback(self):
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "secret-key", "NVIDIA_MODEL": "model-id",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}), \
+                patch.dict(sys.modules, {"openai": None}):
+            answer = explain(RESULT)
+        self.assertEqual(answer["source"], "computed_facts")
+        self.assertEqual(answer["reason"], "model_unavailable")
+
+
+    def test_nvidia_sdk_errors_do_not_retry_or_fall_through_to_openai(self):
+        secret = "never-print-this-provider-key"
+        timeout = type("APITimeoutError", (FakeModelError,), {})(secret)
+        connection = type("APIConnectionError", (FakeModelError,), {})(secret)
+        cases = [(timeout, "timeout", None), (connection, "network_error", None)]
+        for status, code in ((401, "authentication"), (429, "rate_limited"),
+                             (503, "provider_error")):
+            error = FakeModelError(secret)
+            error.status_code = status
+            cases.append((error, code, status))
+        for error, code, status in cases:
+            sdk, client = fake_nvidia_sdk(error=error)
+            with self.subTest(code=code), patch.dict(os.environ, {
+                    "NVIDIA_API_KEY": secret, "NVIDIA_MODEL": "configured-model",
+                    "OPENAI_API_KEY": "fallback-key", "OPENAI_MODEL": "fallback-model"}), \
+                    patch.dict(sys.modules, {"openai": sdk}):
+                answer = explain(RESULT, diagnostics=True)
+            self.assertEqual(answer["source"], "computed_facts")
+            self.assertEqual(answer["reason"], "model_unavailable")
+            self.assertEqual(answer["provider"], "nvidia")
+            self.assertEqual(answer["error_type"], type(error).__name__)
+            self.assertEqual(answer["error_code"], code)
+            self.assertEqual(answer.get("http_status"), status)
+            self.assertNotIn(secret, json.dumps(answer))
+            self.assertNotIn("fallback-key", json.dumps(answer))
+            client.chat.completions.create.assert_called_once()
+            client.close.assert_called_once()
+            self.no_network.assert_not_called()
+
+    def test_cli_explicit_provider_and_config_never_use_other_provider(self):
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "check-model.py"
+        with patch.dict(sys.modules, {"explanation": explanation}):
+            script = runpy.run_path(str(script_path), run_name="check_model_test")
+        env = {"NVIDIA_API_KEY": "secret-nvidia", "NVIDIA_MODEL": "nvidia-model",
+               "OPENAI_API_KEY": "secret-openai", "OPENAI_MODEL": "openai-model"}
+        with patch.dict(os.environ, env):
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = script["main"](["--provider", "openai", "--check-config"])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(output.getvalue())["provider"], "openai")
+            self.assertEqual(os.environ["NVIDIA_API_KEY"], "secret-nvidia")
+            self.assertNotIn("secret", output.getvalue())
+            self.no_network.assert_not_called()
+            self.no_sdk_network.assert_not_called()
+            chosen = {"strengths": ["strength_score"], "risks": ["risk_residual"],
+                      "tradeoffs": ["tradeoff_budget"]}
+            comparison = {"strengths": ["score_change"], "risks": ["weakest"],
+                          "tradeoffs": ["measure_change"]}
+            with patch("src.explanation.request.urlopen", side_effect=[
+                    FakeResponse(self.openai_response(json.dumps(chosen))),
+                    FakeResponse(self.openai_response(json.dumps(comparison))),
+            ]) as transport, redirect_stdout(StringIO()) as result_output:
+                exit_code = script["main"](["--provider", "openai", "--scenario", "both"])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(transport.call_count, 2)
+            self.assertEqual(os.environ["NVIDIA_API_KEY"], "secret-nvidia")
+            self.no_sdk_network.assert_not_called()
+            results = json.loads(result_output.getvalue())["results"]
+            self.assertTrue(all(item["provider"] == "openai" for item in results))
+            self.assertEqual(results[1]["proposed_score"], 57.20556)
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 
 
 _OPENAI_API_URL = "https://api.openai.com/v1/responses"
-_NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+_NVIDIA_API_BASE_URL = "https://integrate.api.nvidia.com/v1"
 _MODEL_TIMEOUT_SECONDS = 8
 _MODEL_ENV_KEYS = ("NVIDIA_API_KEY", "NVIDIA_MODEL", "OPENAI_API_KEY", "OPENAI_MODEL")
 _DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -269,41 +269,60 @@ def _select_with_openai(facts, api_key, model, evidence):
     return _validate_selection("".join(texts), facts)
 
 
+class ModelRequestError(OSError):
+    """Wrap optional SDK errors without exposing provider response content."""
+
+
 def _select_with_nvidia(facts, api_key, model, evidence):
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _INSTRUCTIONS},
-            {"role": "user", "content": json.dumps(
-                {"candidates": facts, "calculated_evidence": evidence},
-                ensure_ascii=False, sort_keys=True)},
-        ],
-        "max_tokens": 512,
-        "stream": False,
-    }
-    body = _post_json(_NVIDIA_API_URL, payload, api_key)
-    choices = body.get("choices")
-    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+    try:
+        from openai import OpenAI, OpenAIError
+    except ImportError as exc:
+        raise ModelRequestError("NVIDIA model client is not installed") from exc
+    client = None
+    try:
+        client = OpenAI(base_url=_NVIDIA_API_BASE_URL, api_key=api_key,
+                        timeout=_MODEL_TIMEOUT_SECONDS, max_retries=0)
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _INSTRUCTIONS},
+                {"role": "user", "content": json.dumps(
+                    {"candidates": facts, "calculated_evidence": evidence},
+                    ensure_ascii=False, sort_keys=True)},
+            ],
+            max_tokens=512,
+            stream=False,
+        )
+    except OpenAIError as exc:
+        raise ModelRequestError("NVIDIA model request failed") from exc
+    finally:
+        if client is not None:
+            client.close()
+    choices = getattr(completion, "choices", None)
+    if not isinstance(choices, list) or len(choices) != 1:
         raise ModelOutputError("Unexpected model choices")
     choice = choices[0]
-    if choice.get("finish_reason") not in (None, "stop"):
+    if getattr(choice, "finish_reason", None) not in (None, "stop"):
         raise ModelOutputError("Model response was not completed")
-    message = choice.get("message")
-    if not isinstance(message, dict) or message.get("refusal"):
+    message = getattr(choice, "message", None)
+    if message is None or getattr(message, "refusal", None):
         raise ModelOutputError("Model did not provide a fact selection")
-    return _validate_selection(message.get("content"), facts)
+    return _validate_selection(getattr(message, "content", None), facts)
 
 
 def _failure_diagnostics(failure):
     """Return only allowlisted metadata, never exception text or HTTP bodies."""
-    details = {"error_type": type(failure).__name__}
-    if isinstance(failure, HTTPError):
-        details["http_status"] = failure.code
-        details["error_code"] = ("authentication" if failure.code in (401, 403)
-                                 else "rate_limited" if failure.code == 429
+    cause = failure.__cause__ if isinstance(failure, ModelRequestError) else failure
+    cause = cause or failure
+    details = {"error_type": type(cause).__name__}
+    status = cause.code if isinstance(cause, HTTPError) else getattr(cause, "status_code", None)
+    if type(status) is int and 100 <= status <= 599:
+        details["http_status"] = status
+        details["error_code"] = ("authentication" if status in (401, 403)
+                                 else "rate_limited" if status == 429
                                  else "provider_error")
-    elif isinstance(failure, TimeoutError) or (
-            isinstance(failure, URLError) and isinstance(failure.reason, TimeoutError)):
+    elif isinstance(cause, TimeoutError) or type(cause).__name__ == "APITimeoutError" or (
+            isinstance(cause, URLError) and isinstance(cause.reason, TimeoutError)):
         details["error_code"] = "timeout"
     elif isinstance(failure, (ValueError, TypeError, KeyError, IndexError)):
         details["error_code"] = "invalid_model_output"
