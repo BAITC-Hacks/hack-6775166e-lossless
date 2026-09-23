@@ -2,8 +2,8 @@
 
 // The server owns simulation and Score. This interface only composes decisions
 // and displays catalogue fields and server results.
-const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change" };
-const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0 };
+const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change", advice: "/api/advice" };
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0 };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
@@ -95,6 +95,7 @@ function setDecisions(decisions, message) {
   state.revision += 1;
   state.result = null;
   state.proposal = null;
+  clearAdvisorResponse();
   $("comparison").hidden = true;
   $("plan-errors").hidden = true;
   syncNavigation();
@@ -384,6 +385,7 @@ function renderReport(result, decisions) {
     synergies.append(node("p", `${synergy.measures.join(" + ")}: ${indicatorName(synergy.indicator)} +${format(synergy.bonus, 0)} · ${synergy.district}`));
   });
   displayExplanation(result.explanation);
+  clearAdvisorResponse();
   const signed = $("signed-decisions"); signed.replaceChildren();
   decisions.forEach((decision, index) => {
     const measure = measureById(decision.measure_id);
@@ -529,6 +531,89 @@ async function recommendChange() {
     notice("Совет по одной замене сейчас недоступен. Ваш план сохранён.", true);
   } finally { setBusy(null); }
 }
+function clearAdvisorResponse() {
+  $("advisor-response").hidden = true;
+  $("advisor-error").hidden = true;
+  $("advisor-response-text").textContent = "";
+  $("advisor-options").replaceChildren();
+}
+function renderAdvisorAnswer(answer) {
+  const advice = answer?.advice;
+  if (answer?.valid !== true || typeof advice?.text !== "string" || !advice.text.trim()
+      || !Array.isArray(answer.options) || answer.options.length !== 3) throw new Error("Incomplete decision support");
+  const byId = new Map();
+  for (const option of answer.options) {
+    if (!["current", "one_change", "optimum"].includes(option?.id) || byId.has(option.id)
+        || typeof option.label !== "string" || !finite(option.result?.score) || !finite(option.result?.cost)) throw new Error("Invalid computed option");
+    const decisions = validateProposal({ ...option.result, decisions: option.decisions });
+    byId.set(option.id, { ...option, decisions });
+  }
+  if (byId.size !== 3 || Math.abs(byId.get("current").result.score - state.result.score) > 1e-8) throw new Error("Options do not match current plan");
+  $("advisor-response-text").textContent = advice.text.trim();
+  $("advisor-response-source").textContent = advice.source === "model"
+    ? `AI-разбор проверенных расчётов${advice.model ? ` · ${advice.model}` : ""}`
+    : "Разбор по рассчитанным фактам · AI-модель недоступна";
+  const host = $("advisor-options"); host.replaceChildren();
+  for (const id of ["current", "one_change", "optimum"]) {
+    const option = byId.get(id);
+    const card = node("article", null, "advisor-option");
+    card.append(node("strong", option.label));
+    if (advice.source === "model" && advice.selected_option === id) card.append(node("span", "Советник выделил для вашего приоритета", "advisor-option-picked"));
+    card.append(node("span", format(option.result.score), "advisor-option-score"));
+    card.append(node("small", `${format(option.result.cost, 0)} / ${format(budget(), 0)} ед. бюджета`));
+    if (typeof option.tradeoff === "string" && option.tradeoff.trim()) card.append(node("p", option.tradeoff.trim()));
+    if (id !== "current") {
+      const button = node("button", "Сравнить с моим планом", "button button-secondary");
+      button.type = "button";
+      button.addEventListener("click", () => {
+        if (state.busy || !state.result) return;
+        $("suggestion-title").textContent = id === "optimum" ? "Оптимум заданной модели." : "Одна замена. Проверенный результат.";
+        $("suggestion-description").textContent = id === "optimum"
+          ? "Лучший допустимый план по Score среди всех комбинаций пяти мер. Сравните районы перед выбором."
+          : "Лучшая допустимая замена одного распоряжения по Score. Сравните районы перед выбором.";
+        showSuggestion(option.result, option.decisions);
+      });
+      card.append(button);
+    }
+    host.append(card);
+  }
+  $("advisor-response").hidden = false;
+}
+async function askAdvisor(event) {
+  event.preventDefault();
+  if (state.adviceBusy || !state.result || state.busy) return;
+  const question = $("advisor-priority").value.trim();
+  if (!question) { $("advisor-priority").focus(); return; }
+  const revision = state.revision;
+  const score = state.result.score;
+  const decisions = state.decisions.map((item) => ({ ...item }));
+  clearAdvisorResponse();
+  state.adviceBusy = true;
+  $("advisor-priority").disabled = true;
+  $("ask-advisor").disabled = true;
+  $("ask-advisor").textContent = "Советник разбирает варианты…";
+  announce("Советник сопоставляет ваш приоритет с рассчитанными вариантами.");
+  try {
+    const answer = await requestJson(API.advice, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions, question })
+    });
+    if (revision !== state.revision || !state.result || score !== state.result.score) return;
+    renderAdvisorAnswer(answer);
+    announce("Разбор вашего приоритета готов. Показаны три рассчитанных варианта.");
+  } catch (error) {
+    console.error("Decision support unavailable", error);
+    if (revision === state.revision) {
+      $("advisor-error").textContent = "Не удалось разобрать приоритет. Ваш план и результаты расчёта сохранены; попробуйте ещё раз.";
+      $("advisor-error").hidden = false;
+      announce("Советник сейчас недоступен. Ваш план сохранён.");
+    }
+  } finally {
+    state.adviceBusy = false;
+    $("advisor-priority").disabled = false;
+    $("ask-advisor").disabled = false;
+    $("ask-advisor").replaceChildren(document.createTextNode("Разобрать варианты "), icon("arrow"));
+  }
+}
 function applySuggestion() {
   if (!state.proposal || state.busy) return;
   const decisions = state.proposal.decisions;
@@ -563,6 +648,8 @@ $("submit-plan").addEventListener("click", calculate);
 $("suggest-plan").addEventListener("click", suggestPlan);
 $("compare-plan").addEventListener("click", () => { if (state.result) suggestPlan(); });
 $("recommend-change").addEventListener("click", recommendChange);
+$("advisor-priority").addEventListener("input", clearAdvisorResponse);
+$("advisor-form").addEventListener("submit", askAdvisor);
 $("mobile-plan-jump").addEventListener("click", () => {
   const title = $("portfolio-title");
   title.setAttribute("tabindex", "-1");
