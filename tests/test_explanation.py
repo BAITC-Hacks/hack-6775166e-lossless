@@ -212,6 +212,7 @@ class ExplanationTests(unittest.TestCase):
         self.assertNotIn("56,54", answer["text"])
         sent = json.loads(mock_open.call_args.args[0].data)
         self.assertEqual(sent["model"], "test-model")
+        self.assertEqual(mock_open.call_args.kwargs["timeout"], 20)
         self.assertIn("strength_indicator", sent["input"])
         self.assertFalse(sent["store"])
         output_format = sent["text"]["format"]

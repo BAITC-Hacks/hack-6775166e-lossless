@@ -184,7 +184,8 @@ def _post_json(url, payload, api_key):
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    with request.urlopen(req, timeout=8) as response:
+    # The first request with a new strict schema can take longer to process.
+    with request.urlopen(req, timeout=20) as response:
         return json.load(response)
 
 
