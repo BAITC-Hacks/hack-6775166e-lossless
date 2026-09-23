@@ -120,6 +120,7 @@
     let projectedDistricts = [];
     let projectedBuildings = [];
     let hovered = null;
+    let dropPreview = null;
     let drag = null;
     let animationFrame = 0;
     let revealStart = 0;
@@ -202,22 +203,22 @@
       });
     }
 
-    function drawPlatform(shape, highlighted, active, vulnerable, progress) {
+    function drawPlatform(shape, highlighted, active, vulnerable, preview, progress) {
       const topHeight = 0.17 * progress;
       const topPoints = shape.points.map(([x, z]) => project(x, topHeight, z));
       const bottomPoints = shape.points.map(([x, z]) => project(x, -0.09, z));
       for (let i = 0; i < shape.points.length; i++) {
         const j = (i + 1) % shape.points.length;
         polygon([topPoints[i], topPoints[j], bottomPoints[j], bottomPoints[i]],
-          active ? "#184f5b" : highlighted ? "#305449" : vulnerable ? "#57363e" : "#102e3a",
+          preview ? "#32463b" : active ? "#184f5b" : highlighted ? "#305449" : vulnerable ? "#57363e" : "#102e3a",
           active ? "rgba(113,244,220,.44)" : "rgba(79,142,151,.18)");
       }
-      const fill = active ? "#1f6570" : highlighted ? "#3a594a" : vulnerable ? "#65424b" : "#183b49";
-      const border = active ? "#a6ffe8" : highlighted ? "#e7bd72" : vulnerable ? "#ffab92" : "rgba(113,211,204,.56)";
+      const fill = preview ? "#3e5540" : active ? "#1f6570" : highlighted ? "#3a594a" : vulnerable ? "#65424b" : "#183b49";
+      const border = preview ? "#dbff69" : active ? "#a6ffe8" : highlighted ? "#e7bd72" : vulnerable ? "#ffab92" : "rgba(113,211,204,.56)";
       ctx.save();
-      ctx.shadowBlur = active ? 24 : highlighted || vulnerable ? 15 : 5;
-      ctx.shadowColor = active ? "#6be5cb" : highlighted ? "#d5ad64" : vulnerable ? "#ff8e82" : "#2d9a9a";
-      polygon(topPoints, fill, border, active ? 2.5 : 1.3);
+      ctx.shadowBlur = preview ? 30 : active ? 24 : highlighted || vulnerable ? 15 : 5;
+      ctx.shadowColor = preview ? "#dbff69" : active ? "#6be5cb" : highlighted ? "#d5ad64" : vulnerable ? "#ff8e82" : "#2d9a9a";
+      polygon(topPoints, fill, border, preview || active ? 2.5 : 1.3);
       ctx.restore();
       ctx.save();
       ctx.beginPath();
@@ -234,7 +235,7 @@
       return topPoints;
     }
 
-    function drawBuilding(building, active, affected, progress) {
+    function drawBuilding(building, active, affected, preview, progress) {
       const x = building.x, z = building.z, w = building.width, d = building.depth;
       const base = 0.17 * progress;
       const high = base + building.height * progress;
@@ -247,7 +248,7 @@
         project(x + w, high, z + d), project(x - w, high, z + d)
       ];
       const isBright = building.height > 0.79;
-      const top = active ? "#a4e9d5" : affected ? "#d9c795" : isBright ? "#9bc8bf" : "#6caab1";
+      const top = preview ? "#dbff69" : active ? "#a4e9d5" : affected ? "#d9c795" : isBright ? "#9bc8bf" : "#6caab1";
       polygon([floor[0], floor[1], roof[1], roof[0]], active ? "#317b80" : "#295d6a", null);
       polygon([floor[1], floor[2], roof[2], roof[1]], active ? "#3a8e8c" : affected ? "#90765c" : "#34717a", null);
       polygon([floor[2], floor[3], roof[3], roof[2]], active ? "#326c75" : "#234f60", null);
@@ -255,7 +256,7 @@
       polygon(roof, top, "rgba(190,245,225,.45)", 0.5);
       if (isBright && progress > 0.85) {
         const c = project(x, high, z);
-        ctx.fillStyle = active ? "#c9fff2" : "#d4e8c3";
+        ctx.fillStyle = preview ? "#dbff69" : active ? "#c9fff2" : "#d4e8c3";
         ctx.fillRect(c.x - 1.2, c.y - 1.2, 2.4, 2.4);
       }
       return [
@@ -277,13 +278,15 @@
         const isSelected = data.selected === shape.name;
         const isAffected = data.affected.includes(shape.name);
         const isWeakest = weakest === shape.name;
+        const isDropPreview = dropPreview === shape.name;
         const score = scores?.[shape.name]?.score;
         const scoreText = roundScore(score);
         button.classList.toggle("is-selected", isSelected);
-        button.classList.toggle("is-affected", isAffected && !isSelected);
-        button.classList.toggle("is-vulnerable", isWeakest && !isSelected && !isAffected);
+        button.classList.toggle("is-affected", isAffected && !isSelected && !isDropPreview);
+        button.classList.toggle("is-vulnerable", isWeakest && !isSelected && !isAffected && !isDropPreview);
+        button.classList.toggle("is-drop-preview", isDropPreview);
         button.setAttribute("aria-pressed", String(isSelected));
-        button.setAttribute("aria-label", shape.name + ", " + (finite(score) ? "районный балл " + scoreText : "районный балл недоступен") + (isWeakest ? ", самый низкий районный балл" : "") + (isAffected ? ", в охвате выбранной меры" : "") + (isSelected ? ", выбран" : ""));
+        button.setAttribute("aria-label", shape.name + ", " + (finite(score) ? "районный балл " + scoreText : "районный балл недоступен") + (isWeakest ? ", самый низкий районный балл" : "") + (isAffected ? ", в охвате выбранной меры" : "") + (isSelected ? ", выбран" : "") + (isDropPreview ? ", цель перетаскивания" : ""));
         button.querySelector("small").textContent = finite(score) ? (isWeakest ? "МИНИМУМ " : "БАЛЛ ") + scoreText : "ВЫБРАТЬ РАЙОН";
         const point = project(shape.label[0], 0.32, shape.label[1]);
         button.style.left = point.x + "px";
@@ -311,15 +314,16 @@
       ordered.forEach(({ shape }) => {
         const active = data.selected === shape.name || hovered === shape.name;
         const affected = data.affected.includes(shape.name);
-        const vulnerable = shape.name === weakest && !affected && !active;
-        const polygonPoints = drawPlatform(shape, affected, active, vulnerable, progress);
+        const preview = dropPreview === shape.name;
+        const vulnerable = shape.name === weakest && !affected && !active && !preview;
+        const polygonPoints = drawPlatform(shape, affected, active, vulnerable, preview, progress);
         projectedDistricts.push({ name: shape.name, points: polygonPoints });
         shape.buildings
           .slice()
           .sort((a, b) => project(a.x, 0, a.z).depth - project(b.x, 0, b.z).depth)
           .forEach((building) => projectedBuildings.push({
             name: shape.name,
-            faces: drawBuilding(building, active, affected, progress)
+            faces: drawBuilding(building, active, affected, preview, progress)
           }));
       });
       refreshLabels();
@@ -360,6 +364,34 @@
         if (pointInScreenPolygon(x, y, district.points)) return district.name;
       }
       return null;
+    }
+
+    function pickDistrict(clientX, clientY) {
+      if (destroyed || !finite(clientX) || !finite(clientY)) return null;
+      const bounds = root.getBoundingClientRect();
+      if (clientX < bounds.left || clientX > bounds.right || clientY < bounds.top || clientY > bounds.bottom) return null;
+      for (const [name, button] of districtButtons) {
+        const rect = button.getBoundingClientRect();
+        if (rect.width && rect.height && clientX >= rect.left && clientX <= rect.right &&
+          clientY >= rect.top && clientY <= rect.bottom) return name;
+      }
+      if (!ctx) return null;
+      const canvasBounds = canvas.getBoundingClientRect();
+      if (clientX < canvasBounds.left || clientX > canvasBounds.right ||
+        clientY < canvasBounds.top || clientY > canvasBounds.bottom) return null;
+      // Orbit, tilt and zoom may have changed since the previous animation frame.
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+        draw();
+      }
+      return hitTest(clientX - canvasBounds.left, clientY - canvasBounds.top);
+    }
+
+    function refreshLegend() {
+      legendText.textContent = dropPreview ? "ОТПУСТИТЕ МЕРУ: " + dropPreview.toUpperCase() :
+        data.affected.length ? "ЯНТАРНЫЙ = ОХВАТ МЕРЫ" :
+          ctx ? "НАЖМИТЕ НА РАЙОН · ТЯНИТЕ ДЛЯ ОБЗОРА" : "ВЫБЕРИТЕ РАЙОН ИЗ СПИСКА";
     }
 
     function position(event) {
@@ -464,10 +496,22 @@
         modeLabel.textContent = data.mode === "result" ? "ПОСЛЕ РЕШЕНИЙ" : "ИСХОДНОЕ СОСТОЯНИЕ";
         root.classList.toggle("is-result", data.mode === "result");
         root.classList.toggle("has-affected", data.affected.length > 0);
-        legendText.textContent = data.affected.length ? "ЯНТАРНЫЙ = ОХВАТ МЕРЫ" :
-          ctx ? "НАЖМИТЕ НА РАЙОН · ТЯНИТЕ ДЛЯ ОБЗОРА" : "ВЫБЕРИТЕ РАЙОН ИЗ СПИСКА";
+        refreshLegend();
         status.textContent = data.selected ? "Выбран район " + data.selected : "Показаны пять районов города";
         // Keep the accessible district controls current even when Canvas is unavailable.
+        refreshLabels();
+        requestDraw();
+      },
+      pickDistrict,
+      setDropPreview(name) {
+        if (destroyed) return;
+        const next = districtButtons.has(name) ? name : null;
+        if (next === dropPreview) return;
+        dropPreview = next;
+        root.classList.toggle("has-drop-preview", Boolean(next));
+        refreshLegend();
+        status.textContent = next ? "Отпустите меру над районом " + next :
+          data.selected ? "Выбран район " + data.selected : "Показаны пять районов города";
         refreshLabels();
         requestDraw();
       },

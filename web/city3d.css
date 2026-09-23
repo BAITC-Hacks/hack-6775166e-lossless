@@ -4,6 +4,7 @@
   --city-muted: #9cb6c2;
   --city-cyan: #8bf5e6;
   --city-amber: #f0bf75;
+  --city-lime: #dbff69;
   position: relative;
   width: 100%;
   min-width: 0;
@@ -161,6 +162,14 @@
 .city3d__district.is-vulnerable .city3d__district-index,
 .city3d__district.is-vulnerable small { color: #ffc8ad; }
 
+.city3d__district.is-drop-preview {
+  border-color: var(--city-lime);
+  background: #304137;
+  box-shadow: 0 0 0 4px #dbff6952, 0 0 24px #dbff6966, inset 3px 0 0 var(--city-lime);
+}
+.city3d__district.is-drop-preview .city3d__district-index,
+.city3d__district.is-drop-preview .city3d__district-arrow { color: var(--city-lime); }
+
 .city3d__district:focus-visible,
 .city3d__control:focus-visible {
   outline: 2px solid #f6cf8e;
@@ -263,6 +272,7 @@
   transform: rotate(45deg);
 }
 .city3d.has-affected .city3d__legend-mark { border-color: #f0bf75; }
+.city3d.has-drop-preview .city3d__legend-mark { border-color: var(--city-lime); }
 
 .city3d__disclaimer {
   text-align: right;
