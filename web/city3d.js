@@ -14,6 +14,19 @@
     { name: "Алматы", points: [[1.57, -0.08], [3.03, 0.08], [3.08, 2.24], [1.56, 2.08]], label: [2.28, 1.07] }
   ];
   const OUTLINE = [[-3.44, -3.15], [3.38, -3.15], [3.48, 2.72], [-3.42, 2.72]];
+  const INITIATIVE_FORMS = {
+    M1: "Автобусная полоса", M2: "Светофоры", M3: "ЛРТ", M4: "Парк",
+    M5: "Чистое топливо", M6: "Озеленение", M7: "Школа и детсад",
+    M8: "Поликлиника", M9: "Спорт", M10: "Свет и камеры",
+    M11: "Переходы", M12: "Цифровые сервисы", M13: "Инженерные сети",
+    M14: "Аварийные бригады"
+  };
+  const CITY_FORMS = new Set(["M2", "M6", "M12", "M14"]);
+  // The colors come from Egor's original paper/green/lime/orange interface.
+  const COLOR = {
+    paper: "#f5f3eb", panel: "#fffefa", ink: "#243c35",
+    green: "#294d40", lime: "#dce6b4", orange: "#b67147"
+  };
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
   const roundScore = (value) => finite(value) ? value.toFixed(2).replace(".", ",") : "—";
@@ -56,6 +69,137 @@
     return element;
   }
 
+  function drawInitiativeModel(ctx, project, polygon, line, item, progress, mode) {
+    const x = item.x, z = item.z, base = item.city ? -0.1 : 0.19 * progress;
+    const s = item.city ? 0.75 : 0.78;
+    const after = mode === "result" && !item.preview;
+    const edge = item.preview ? COLOR.orange : COLOR.green;
+    const roofColor = item.preview ? "rgba(182,113,71,.72)" : after ? COLOR.lime : "rgba(220,230,180,.72)";
+    const wallColor = item.preview ? "rgba(182,113,71,.3)" : after ? "rgba(41,77,64,.85)" : "rgba(41,77,64,.35)";
+    const darkWall = item.preview ? "rgba(182,113,71,.56)" : after ? COLOR.green : "rgba(41,77,64,.58)";
+    const p = (dx, dy, dz) => project(x + dx * s, base + dy * s, z + dz * s);
+    const slab = (dx, dz, w, d, h, top = roofColor) => {
+      const a = [p(dx - w, 0, dz - d), p(dx + w, 0, dz - d), p(dx + w, 0, dz + d), p(dx - w, 0, dz + d)];
+      const b = [p(dx - w, h, dz - d), p(dx + w, h, dz - d), p(dx + w, h, dz + d), p(dx - w, h, dz + d)];
+      polygon([a[0], a[1], b[1], b[0]], wallColor, edge, .6);
+      polygon([a[1], a[2], b[2], b[1]], darkWall, edge, .6);
+      polygon([a[2], a[3], b[3], b[2]], wallColor, edge, .6);
+      polygon([a[3], a[0], b[0], b[3]], darkWall, edge, .6);
+      polygon(b, top, edge, 1.2);
+    };
+    const floor = (dx, dz, w, d, fill = roofColor) =>
+      polygon([p(dx - w, .02, dz - d), p(dx + w, .02, dz - d), p(dx + w, .02, dz + d), p(dx - w, .02, dz + d)], fill, edge, 1);
+    const rod = (a, b, weight = 2) => line(p(...a), p(...b), edge, weight);
+    const dot = (dx, dy, dz, radius = 3, color = edge) => {
+      const center = p(dx, dy, dz);
+      ctx.beginPath(); ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill();
+    };
+
+    // Fourteen tiny architectural metaphors. Their dimensions never encode
+    // cost, predicted effects, completion or real infrastructure locations.
+    switch (item.id) {
+      case "M1": // bus lane and vehicle
+        floor(0, 0, .41, .31, "rgba(41,77,64,.13)");
+        rod([-.32, .04, -.1], [.32, .04, -.1], 3);
+        rod([-.32, .04, .14], [.32, .04, .14], 3);
+        slab(-.04, .02, .22, .11, .2);
+        break;
+      case "M2": // signal mast
+        slab(0, 0, .09, .09, .48);
+        slab(0, 0, .15, .12, .1);
+        dot(0, .19, -.13, 2.4, COLOR.orange);
+        dot(0, .31, -.13, 2.4, roofColor);
+        dot(0, .43, -.13, 2.4, edge);
+        break;
+      case "M3": // elevated dual tracks
+        slab(-.29, 0, .055, .09, .37);
+        slab(.29, 0, .055, .09, .37);
+        rod([-.4, .39, -.12], [.4, .39, -.12], 3);
+        rod([-.4, .39, .12], [.4, .39, .12], 3);
+        break;
+      case "M4": // park with three tree crowns
+        floor(0, 0, .42, .34, "rgba(220,230,180,.6)");
+        [[-.24, -.14], [.2, -.1], [0, .18]].forEach(([tx, tz]) => {
+          slab(tx, tz, .035, .035, .23, edge);
+          slab(tx, tz, .13, .13, .12, roofColor);
+        });
+        break;
+      case "M5": // clean fuel converter
+        slab(-.1, 0, .26, .22, .23);
+        slab(.18, -.05, .07, .07, .51, roofColor);
+        rod([.07, .42, -.14], [.3, .42, -.14], 2);
+        break;
+      case "M6": // windbreak and greening
+        floor(0, 0, .43, .3, "rgba(220,230,180,.55)");
+        [-.28, 0, .28].forEach((tx) => {
+          slab(tx, 0, .035, .035, .25, edge);
+          slab(tx, 0, .12, .12, .16, roofColor);
+        });
+        break;
+      case "M7": // paired school and kindergarten
+        slab(-.16, 0, .22, .24, .4);
+        slab(.25, .06, .14, .18, .25);
+        rod([-.17, .42, 0], [-.17, .61, 0]);
+        polygon([p(-.17, .61, 0), p(.03, .56, 0), p(-.17, .5, 0)], roofColor, edge);
+        break;
+      case "M8": // clinic cross
+        slab(0, 0, .34, .25, .32);
+        slab(0, -.07, .06, .03, .51, roofColor);
+        slab(0, -.07, .2, .03, .41, roofColor);
+        break;
+      case "M9": // sports court and goal
+        floor(0, 0, .41, .28, "rgba(220,230,180,.55)");
+        rod([0, .03, -.28], [0, .03, .28]);
+        rod([-.3, .03, 0], [.3, .03, 0]);
+        rod([.26, .03, -.2], [.26, .27, -.2]);
+        dot(.26, .26, -.2, 3, roofColor);
+        break;
+      case "M10": // lighting and camera
+        [-.24, .24].forEach((tx) => {
+          slab(tx, 0, .04, .04, .52, edge);
+          rod([tx, .52, 0], [tx + .16, .52, 0], 2);
+          dot(tx + .16, .51, 0, 3.4, roofColor);
+        });
+        break;
+      case "M11": // raised safe crossing
+        floor(0, 0, .41, .29, "rgba(41,77,64,.13)");
+        [-.24, -.08, .08, .24].forEach((tx) => floor(tx, 0, .035, .24, roofColor));
+        slab(.34, -.2, .025, .025, .3, edge);
+        break;
+      case "M12": // digital portal
+        slab(-.22, 0, .07, .08, .52);
+        slab(.22, 0, .07, .08, .52);
+        slab(0, 0, .3, .08, .09, roofColor);
+        rod([-.17, .24, 0], [.17, .24, 0]);
+        dot(0, .24, 0, 3, roofColor);
+        break;
+      case "M13": // heat and water networks
+        floor(0, 0, .42, .29, "rgba(41,77,64,.13)");
+        rod([-.35, .15, -.12], [.35, .15, -.12], 5);
+        rod([-.35, .06, .12], [.35, .06, .12], 5);
+        slab(-.27, -.12, .06, .06, .2, roofColor);
+        slab(.27, .12, .06, .06, .13, roofColor);
+        break;
+      case "M14": // response vehicle and beacon
+        slab(-.08, 0, .32, .18, .22);
+        slab(.24, 0, .12, .18, .34);
+        dot(-.22, .01, .2, 3, edge);
+        dot(.25, .01, .2, 3, edge);
+        dot(.24, .4, 0, 3.6, COLOR.orange);
+        break;
+    }
+    const plate = p(0, .72, 0);
+    ctx.font = "700 10px Arial, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = item.preview ? COLOR.orange : COLOR.green;
+    ctx.fillRect(plate.x - 13, plate.y - 8, 26, 16);
+    ctx.fillStyle = COLOR.panel;
+    ctx.textAlign = "center";
+    ctx.fillText(item.id, plate.x, plate.y + .5);
+  }
+
+
   window.createCityScene = function createCityScene(container, options = {}) {
     if (!(container instanceof Element)) throw new TypeError("createCityScene requires a DOM container");
     const onSelect = typeof options.onSelect === "function" ? options.onSelect : () => {};
@@ -73,6 +217,9 @@
     top.append(brand, modeLabel);
     const districtLayer = createElement("div", "city3d__districts");
     districtLayer.setAttribute("aria-label", "Выберите район");
+    const initiativeLayer = createElement("div", "city3d__initiatives");
+    initiativeLayer.setAttribute("role", "list");
+    initiativeLayer.setAttribute("aria-label", "Инициативы на условной сцене");
     const controls = createElement("div", "city3d__controls");
     const directions = [
       ["left", "Повернуть влево", "↶"],
@@ -99,7 +246,9 @@
     const status = createElement("span", "city3d__sr", "");
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
-    root.append(canvas, top, districtLayer, controls, foot, status);
+    const surface = createElement("div", "city3d__surface");
+    surface.append(canvas, top, districtLayer, controls, foot);
+    root.append(surface, initiativeLayer, status);
     container.replaceChildren(root);
 
     const districtButtons = new Map();
@@ -114,13 +263,14 @@
       districtButtons.set(shape.name, button);
     });
 
-    let data = { districts: {}, selected: null, affected: [], resultDistricts: null, mode: "baseline" };
+    let data = { districts: {}, selected: null, affected: [], resultDistricts: null, mode: "baseline", decisions: [], measures: {} };
     let yaw = -0.34, pitch = 0.89, zoom = 1;
     let width = 0, height = 0, pixelRatio = 1;
     let projectedDistricts = [];
     let projectedBuildings = [];
     let hovered = null;
     let dropPreview = null;
+    let initiativePreview = null;
     let drag = null;
     let animationFrame = 0;
     let revealStart = 0;
@@ -162,29 +312,29 @@
 
     function drawGrid() {
       const gradient = ctx.createRadialGradient(width * 0.5, height * 0.43, 24, width * 0.5, height * 0.5, Math.max(width, height) * 0.8);
-      gradient.addColorStop(0, "#17323d");
-      gradient.addColorStop(0.58, "#0b1e2a");
-      gradient.addColorStop(1, "#06131d");
+      gradient.addColorStop(0, COLOR.panel);
+      gradient.addColorStop(0.58, COLOR.paper);
+      gradient.addColorStop(1, "#e9eddf");
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, width, height);
       ctx.save();
       ctx.lineWidth = 1;
       for (let x = -7; x <= 7; x += 0.5) {
-        line(project(x, -0.25, -6), project(x, -0.25, 6), "rgba(82,137,149,.09)");
+        line(project(x, -0.25, -6), project(x, -0.25, 6), "rgba(41,77,64,.09)");
       }
       for (let z = -6; z <= 6; z += 0.5) {
-        line(project(-7, -0.25, z), project(7, -0.25, z), "rgba(82,137,149,.09)");
+        line(project(-7, -0.25, z), project(7, -0.25, z), "rgba(41,77,64,.09)");
       }
       ctx.restore();
       const edge = OUTLINE.map(([x, z]) => project(x, -0.14, z));
-      polygon(edge, "rgba(16,47,59,.7)", "rgba(115,216,203,.22)", 1.5);
+      polygon(edge, "rgba(220,230,180,.55)", "rgba(41,77,64,.25)", 1.5);
       for (let i = 0; i < OUTLINE.length; i++) {
         const a = OUTLINE[i], b = OUTLINE[(i + 1) % OUTLINE.length];
-        line(project(a[0], -0.14, a[1]), project(a[0], -0.28, a[1]), "rgba(87,201,184,.25)");
+        line(project(a[0], -0.14, a[1]), project(a[0], -0.28, a[1]), "rgba(41,77,64,.25)");
         polygon([
           project(a[0], -0.14, a[1]), project(b[0], -0.14, b[1]),
           project(b[0], -0.28, b[1]), project(a[0], -0.28, a[1])
-        ], "rgba(6,21,31,.9)", null);
+        ], "rgba(41,77,64,.3)", null);
       }
     }
 
@@ -196,9 +346,9 @@
       ];
       roads.forEach(([a, b], index) => {
         const first = project(a[0], -0.095, a[1]), last = project(b[0], -0.095, b[1]);
-        line(first, last, "rgba(92,234,216,.13)", 7);
+        line(first, last, "rgba(41,77,64,.11)", 7);
         ctx.setLineDash([2, 8]);
-        line(first, last, index === 0 ? "rgba(233,183,103,.55)" : "rgba(93,219,203,.45)", 1);
+        line(first, last, index === 0 ? "rgba(182,113,71,.5)" : "rgba(41,77,64,.35)", 1);
         ctx.setLineDash([]);
       });
     }
@@ -210,14 +360,14 @@
       for (let i = 0; i < shape.points.length; i++) {
         const j = (i + 1) % shape.points.length;
         polygon([topPoints[i], topPoints[j], bottomPoints[j], bottomPoints[i]],
-          preview ? "#32463b" : active ? "#184f5b" : highlighted ? "#305449" : vulnerable ? "#57363e" : "#102e3a",
-          active ? "rgba(113,244,220,.44)" : "rgba(79,142,151,.18)");
+          preview ? "#c6d39e" : active ? "#91ab94" : highlighted ? "#d7c5ab" : vulnerable ? "#d9b79d" : "#cbd7bc",
+          active ? "rgba(41,77,64,.6)" : "rgba(41,77,64,.22)");
       }
-      const fill = preview ? "#3e5540" : active ? "#1f6570" : highlighted ? "#3a594a" : vulnerable ? "#65424b" : "#183b49";
-      const border = preview ? "#dbff69" : active ? "#a6ffe8" : highlighted ? "#e7bd72" : vulnerable ? "#ffab92" : "rgba(113,211,204,.56)";
+      const fill = preview ? "#e4ecc5" : active ? "#dce6b4" : highlighted ? "#eedcc9" : vulnerable ? "#efd5c4" : "#e4ead9";
+      const border = preview ? COLOR.green : active ? COLOR.green : highlighted ? COLOR.orange : vulnerable ? COLOR.orange : "rgba(41,77,64,.56)";
       ctx.save();
-      ctx.shadowBlur = preview ? 30 : active ? 24 : highlighted || vulnerable ? 15 : 5;
-      ctx.shadowColor = preview ? "#dbff69" : active ? "#6be5cb" : highlighted ? "#d5ad64" : vulnerable ? "#ff8e82" : "#2d9a9a";
+      ctx.shadowBlur = preview ? 22 : active ? 15 : highlighted || vulnerable ? 9 : 4;
+      ctx.shadowColor = preview || active ? "rgba(41,77,64,.3)" : highlighted || vulnerable ? "rgba(182,113,71,.3)" : "rgba(41,77,64,.12)";
       polygon(topPoints, fill, border, preview || active ? 2.5 : 1.3);
       ctx.restore();
       ctx.save();
@@ -229,7 +379,7 @@
       shape.points.forEach(([x, z]) => {
         const a = project(x - 2.5, topHeight + 0.003, z - 1.5);
         const b = project(x + 2.5, topHeight + 0.003, z + 1.5);
-        line(a, b, "rgba(118,216,205,.075)");
+        line(a, b, "rgba(41,77,64,.055)");
       });
       ctx.restore();
       return topPoints;
@@ -248,15 +398,15 @@
         project(x + w, high, z + d), project(x - w, high, z + d)
       ];
       const isBright = building.height > 0.79;
-      const top = preview ? "#dbff69" : active ? "#a4e9d5" : affected ? "#d9c795" : isBright ? "#9bc8bf" : "#6caab1";
-      polygon([floor[0], floor[1], roof[1], roof[0]], active ? "#317b80" : "#295d6a", null);
-      polygon([floor[1], floor[2], roof[2], roof[1]], active ? "#3a8e8c" : affected ? "#90765c" : "#34717a", null);
-      polygon([floor[2], floor[3], roof[3], roof[2]], active ? "#326c75" : "#234f60", null);
-      polygon([floor[3], floor[0], roof[0], roof[3]], active ? "#205965" : "#194458", null);
-      polygon(roof, top, "rgba(190,245,225,.45)", 0.5);
+      const top = preview ? COLOR.lime : active ? "#c6d8b2" : affected ? "#e6cda8" : isBright ? "#b8cbb3" : "#d8e1ca";
+      polygon([floor[0], floor[1], roof[1], roof[0]], active ? "#789787" : "#98ac9d", null);
+      polygon([floor[1], floor[2], roof[2], roof[1]], active ? "#547763" : affected ? "#b89a78" : "#789683", null);
+      polygon([floor[2], floor[3], roof[3], roof[2]], active ? "#6c8a78" : "#8da995", null);
+      polygon([floor[3], floor[0], roof[0], roof[3]], active ? "#6a8977" : "#9eb2a3", null);
+      polygon(roof, top, "rgba(41,77,64,.45)", 0.5);
       if (isBright && progress > 0.85) {
         const c = project(x, high, z);
-        ctx.fillStyle = preview ? "#dbff69" : active ? "#c9fff2" : "#d4e8c3";
+        ctx.fillStyle = preview ? COLOR.green : active ? COLOR.green : COLOR.lime;
         ctx.fillRect(c.x - 1.2, c.y - 1.2, 2.4, 2.4);
       }
       return [
@@ -266,6 +416,70 @@
         [floor[2], floor[3], roof[3], roof[2]],
         [floor[3], floor[0], roof[0], roof[3]]
       ];
+    }
+
+    function placedInitiatives() {
+      const districtSlots = new Map(), citySlots = [];
+      const placed = [];
+      const add = (measureId, district, preview) => {
+        if (!Object.hasOwn(INITIATIVE_FORMS, measureId)) return;
+        const city = CITY_FORMS.has(measureId);
+        if (city ? district !== null : !districtButtons.has(district)) return;
+        let x, z;
+        if (city) {
+          const index = citySlots.length;
+          citySlots.push(measureId);
+          x = -2.48 + index * 1.44;
+          z = 2.47;
+        } else {
+          const shape = SHAPES.find((item) => item.name === district);
+          const index = districtSlots.get(district) || 0;
+          districtSlots.set(district, index + 1);
+          const offsets = [[-0.49, -0.35], [0.49, -0.35], [-0.49, 0.42], [0.49, 0.42], [0, 0.56]];
+          const offset = offsets[Math.min(index, offsets.length - 1)];
+          x = shape.label[0] + offset[0];
+          z = shape.label[1] + offset[1];
+        }
+        placed.push({ id: measureId, district, city, preview, x, z });
+      };
+      data.decisions.forEach((decision) => add(decision.measure_id, decision.district, false));
+      if (initiativePreview) add(initiativePreview.measureId, initiativePreview.district, true);
+      return placed;
+    }
+
+    function drawInitiatives(progress) {
+      const items = placedInitiatives();
+      if (items.some((item) => item.city)) {
+        const cityColor = data.mode === "result" ? "rgba(41,77,64,.25)" : "rgba(41,77,64,.14)";
+        SHAPES.forEach((shape) => {
+          const center = project(shape.label[0], .2, shape.label[1]);
+          line(project(0, -.04, 2.43), center, cityColor, 1.2);
+        });
+      }
+      items.sort((a, b) => project(a.x, 0, a.z).depth - project(b.x, 0, b.z).depth)
+        .forEach((item) => drawInitiativeModel(ctx, project, polygon, line, item, progress, data.mode));
+    }
+
+    function refreshInitiativeList() {
+      initiativeLayer.replaceChildren();
+      const items = placedInitiatives();
+      if (!items.length) {
+        initiativeLayer.append(createElement("span", "city3d__initiative-empty", "Перенесите меру на район или выберите её в каталоге"));
+        return;
+      }
+      items.forEach((item) => {
+        const measure = data.measures[item.id];
+        const name = typeof measure?.name === "string" ? measure.name : INITIATIVE_FORMS[item.id];
+        const target = item.city ? "Весь город" : item.district;
+        const stateName = item.preview ? "Предпросмотр" : data.mode === "result" ? "В расчёте" : "В пакете";
+        const chip = createElement("div", "city3d__initiative" + (item.preview ? " is-preview" : data.mode === "result" ? " is-result" : " is-plan"));
+        chip.setAttribute("role", "listitem");
+        chip.setAttribute("aria-label", `${item.id}: ${name}. ${target}. ${stateName}. Условная модель, не фактическое строительство.`);
+        chip.append(createElement("b", "city3d__initiative-id", item.id),
+          createElement("span", "city3d__initiative-copy", `${name} · ${target}`),
+          createElement("small", "city3d__initiative-state", stateName));
+        initiativeLayer.append(chip);
+      });
     }
 
     function refreshLabels() {
@@ -326,6 +540,7 @@
             faces: drawBuilding(building, active, affected, preview, progress)
           }));
       });
+      drawInitiatives(progress);
       refreshLabels();
       if (progress < 1) animationFrame = requestAnimationFrame(draw);
       else animationFrame = 0;
@@ -491,7 +706,11 @@
           selected: typeof next.selected === "string" ? next.selected : null,
           affected: Array.isArray(next.affected) ? next.affected : [],
           resultDistricts: hasResult ? candidateResult : null,
-          mode: hasResult ? "result" : "baseline"
+          mode: hasResult ? "result" : "baseline",
+          decisions: Array.isArray(next.decisions) ? next.decisions.filter((item) =>
+            item && typeof item.measure_id === "string" &&
+            (CITY_FORMS.has(item.measure_id) ? item.district === null : districtButtons.has(item.district))) : [],
+          measures: next.measures && typeof next.measures === "object" ? next.measures : {}
         };
         modeLabel.textContent = data.mode === "result" ? "ПОСЛЕ РЕШЕНИЙ" : "ИСХОДНОЕ СОСТОЯНИЕ";
         root.classList.toggle("is-result", data.mode === "result");
@@ -500,6 +719,7 @@
         status.textContent = data.selected ? "Выбран район " + data.selected : "Показаны пять районов города";
         // Keep the accessible district controls current even when Canvas is unavailable.
         refreshLabels();
+        refreshInitiativeList();
         requestDraw();
       },
       pickDistrict,
@@ -515,12 +735,167 @@
         refreshLabels();
         requestDraw();
       },
+      setInitiativePreview(next) {
+        if (destroyed) return;
+        const measureId = next && typeof next.measureId === "string" ? next.measureId : null;
+        const district = next && Object.hasOwn(next, "district") ? next.district : undefined;
+        const valid = measureId && Object.hasOwn(INITIATIVE_FORMS, measureId) &&
+          (CITY_FORMS.has(measureId) ? district === null : districtButtons.has(district));
+        const preview = valid ? { measureId, district } : null;
+        if (preview?.measureId === initiativePreview?.measureId && preview?.district === initiativePreview?.district) return;
+        initiativePreview = preview;
+        root.classList.toggle("has-initiative-preview", Boolean(preview));
+        refreshInitiativeList();
+        requestDraw();
+      },
       destroy() {
         if (destroyed) return;
         destroyed = true;
         aborter.abort();
         if (resizeObserver) resizeObserver.disconnect();
         if (animationFrame) cancelAnimationFrame(animationFrame);
+        root.remove();
+      }
+    };
+  };
+
+  window.createInitiativeDiorama = function createInitiativeDiorama(container) {
+    if (!(container instanceof Element)) throw new TypeError("createInitiativeDiorama requires a DOM container");
+    const root = createElement("div", "initiative3d");
+    root.setAttribute("role", "group");
+    root.setAttribute("tabindex", "0");
+    root.setAttribute("aria-label", "Условная трёхмерная модель меры. Стрелками можно повернуть обзор.");
+    const canvas = createElement("canvas", "initiative3d__canvas");
+    canvas.setAttribute("aria-hidden", "true");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) root.classList.add("is-no-canvas");
+    const top = createElement("div", "initiative3d__top");
+    const code = createElement("b", "initiative3d__code", "СЦЕНА МЕРЫ");
+    const stateLabel = createElement("span", "initiative3d__state", "ВЫБЕРИТЕ МЕРУ");
+    top.append(code, stateLabel);
+    const caption = createElement("div", "initiative3d__caption", "Условная 3D-модель инициативы");
+    root.append(canvas, top, caption);
+    container.replaceChildren(root);
+
+    let measure = null, district = null, mode = "preview";
+    let width = 0, height = 0, dpr = 1, yaw = -.55;
+    let frame = 0, drag = null, destroyed = false;
+    const aborter = new AbortController();
+
+    function project(x, y, z) {
+      const sy = Math.sin(yaw), cy = Math.cos(yaw);
+      const pitch = .83, sp = Math.sin(pitch), cp = Math.cos(pitch);
+      const depth = x * sy * cp + y * sp + z * cy * cp;
+      const scale = Math.min(width / 2.45, height / 1.75);
+      const perspective = 8 / (8 - depth);
+      return {
+        x: width * .5 + (x * cy - z * sy) * scale * perspective,
+        y: height * .67 - (y * cp - (x * sy + z * cy) * sp) * scale * perspective
+      };
+    }
+    function polygon(points, fill, stroke, lineWidth = 1) {
+      ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+      points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+      ctx.closePath();
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lineWidth; ctx.stroke(); }
+    }
+    function line(a, b, color, lineWidth = 1) {
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.stroke();
+    }
+    function draw() {
+      frame = 0;
+      if (destroyed || !ctx || width < 2 || height < 2) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = COLOR.paper; ctx.fillRect(0, 0, width, height);
+      for (let grid = -2; grid <= 2; grid += .5) {
+        line(project(grid, -.2, -2), project(grid, -.2, 2), "rgba(41,77,64,.08)");
+        line(project(-2, -.2, grid), project(2, -.2, grid), "rgba(41,77,64,.08)");
+      }
+      const base = [[-.86, -.6], [.86, -.6], [.86, .6], [-.86, .6]];
+      const topFace = base.map(([x, z]) => project(x, .05, z));
+      const lowerFace = base.map(([x, z]) => project(x, -.12, z));
+      for (let index = 0; index < 4; index++) {
+        const next = (index + 1) % 4;
+        polygon([topFace[index], topFace[next], lowerFace[next], lowerFace[index]], "rgba(41,77,64,.28)", "rgba(41,77,64,.35)");
+      }
+      polygon(topFace, mode === "result" ? COLOR.lime : COLOR.panel, COLOR.green, 1.5);
+      if (!measure) {
+        const center = project(0, .08, 0);
+        ctx.fillStyle = COLOR.green;
+        ctx.font = "700 21px Georgia, serif";
+        ctx.textAlign = "center";
+        ctx.fillText("+", center.x, center.y + 7);
+        return;
+      }
+      if (measure.scope === "city") {
+        const outer = [[-.67, -.42], [.67, -.42], [.67, .42], [-.67, .42]];
+        outer.forEach(([x, z]) => {
+          const spot = project(x, .1, z);
+          ctx.fillStyle = COLOR.green;
+          ctx.fillRect(spot.x - 2.5, spot.y - 2.5, 5, 5);
+          line(project(0, .1, 0), spot, "rgba(41,77,64,.45)", 1);
+        });
+        const fifth = project(0, .09, .42);
+        ctx.fillStyle = COLOR.green; ctx.fillRect(fifth.x - 2.5, fifth.y - 2.5, 5, 5);
+        line(project(0, .1, 0), fifth, "rgba(41,77,64,.45)", 1);
+      }
+      drawInitiativeModel(ctx, project, polygon, line,
+        { id: measure.id, x: 0, z: 0, city: false, preview: mode === "preview" }, 1, mode);
+    }
+    function requestDraw() { if (!frame) frame = requestAnimationFrame(draw); }
+    function resize() {
+      const bounds = canvas.getBoundingClientRect();
+      width = bounds.width; height = bounds.height;
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.round(width * dpr));
+      canvas.height = Math.max(1, Math.round(height * dpr));
+      requestDraw();
+    }
+    canvas.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      drag = { x: event.clientX, yaw };
+      canvas.setPointerCapture(event.pointerId);
+    }, { signal: aborter.signal });
+    canvas.addEventListener("pointermove", (event) => {
+      if (!drag) return;
+      yaw = drag.yaw + (event.clientX - drag.x) * .008;
+      requestDraw();
+    }, { signal: aborter.signal });
+    canvas.addEventListener("pointerup", () => { drag = null; }, { signal: aborter.signal });
+    canvas.addEventListener("pointercancel", () => { drag = null; }, { signal: aborter.signal });
+    root.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      yaw += event.key === "ArrowLeft" ? -.2 : .2;
+      requestDraw();
+    }, { signal: aborter.signal });
+    const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
+    if (resizeObserver) resizeObserver.observe(canvas);
+    else window.addEventListener("resize", resize, { signal: aborter.signal });
+    resize();
+
+    return {
+      update(next = {}) {
+        if (destroyed) return;
+        measure = next.measure && Object.hasOwn(INITIATIVE_FORMS, next.measure.id) ? next.measure : null;
+        district = measure?.scope === "city" ? null : typeof next.district === "string" ? next.district : null;
+        mode = ["preview", "plan", "result"].includes(next.mode) ? next.mode : "plan";
+        code.textContent = measure ? measure.id + " / " + (measure.scope === "city" ? "ВЕСЬ ГОРОД" : district || "РАЙОН") : "СЦЕНА МЕРЫ";
+        stateLabel.textContent = measure ? mode === "result" ? "В РАСЧЁТЕ" : mode === "preview" ? "ПРЕДПРОСМОТР" : "В ПАКЕТЕ" : "ВЫБЕРИТЕ МЕРУ";
+        caption.textContent = measure ? `${measure.name || INITIATIVE_FORMS[measure.id]} · условная 3D-модель` : "Выберите меру для 3D-просмотра";
+        root.setAttribute("aria-label", measure ? `Условная модель ${measure.id}: ${measure.name || INITIATIVE_FORMS[measure.id]}. ${measure.scope === "city" ? "Весь город" : district || "Район не выбран"}. ${stateLabel.textContent}. Стрелками можно повернуть обзор.` : "Сцена меры пуста. Стрелками можно повернуть обзор.");
+        root.classList.toggle("is-preview", mode === "preview" && Boolean(measure));
+        root.classList.toggle("is-result", mode === "result" && Boolean(measure));
+        requestDraw();
+      },
+      destroy() {
+        if (destroyed) return;
+        destroyed = true;
+        aborter.abort();
+        resizeObserver?.disconnect();
+        if (frame) cancelAnimationFrame(frame);
         root.remove();
       }
     };
