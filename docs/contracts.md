@@ -10,12 +10,12 @@
 | `agent/benchmark-data` | Саша | `benchmark/`, `docs/benchmark-data.md` | Эталонные сценарии, расчёт и происхождение источников |
 | `agent/optimizer` | Саша | `src/optimizer.py` | Кандидатный план, измеренный на независимом benchmark |
 | `agent/interface` | Егор | `web/index.html`, `web/app.js`, `web/style.css` | Интерфейс на согласованном API |
-| `agent/visualization` | Егор | `web/charts.js`, `web/charts.css`, `docs/visualization.md` | Графики из результата расчёта |
+| `agent/visualization` | Егор | `web/charts.js`, `web/charts.css`, `web/city3d.js`, `web/city3d.css`, `docs/visualization.md` | Графики и интерактивная условная 3D-схема районов из исходных данных и результата расчёта |
 | `agent/explanation` | Егор | `src/explanation.py`, `tests/test_explanation.py`, `scripts/check-model.py`, `docs/model-run-issue.md` | Объяснение только из проверенного результата, проверка реального вызова модели |
 | `agent/critic` | Саша | `docs/critic-review.md` | Независимый разбор MVP глазами жюри, заказчика, сторонника SOTA и эксперта по соответствию ТЗ; только проверяемые замечания с приоритетом и способом приёмки |
 | `main` | Саша | `src/server.py`, `README.md`, `AGENTS.md`, `docs/contracts.md`, `.env.example`, интеграция и сдача | Работающая отправленная версия |
 
-Общие файлы меняет Саша как интегратор. Если агенту нужен чужой файл или изменение API, он передаёт точное предложение владельцу; Саша фиксирует согласованное изменение здесь, после чего зависимые ветки обновляются. Визуализация монтируется в `#district-chart` через `window.renderDistrictCharts(container, result)`. Интерфейс, графики, оптимизатор и LLM не пересчитывают числовой Score и не подменяют результат `simulate()`.
+Общие файлы меняет Саша как интегратор. Если агенту нужен чужой файл или изменение API, он передаёт точное предложение владельцу; Саша фиксирует согласованное изменение здесь, после чего зависимые ветки обновляются. Визуализация монтируется в `#district-chart` через `window.renderDistrictCharts(container, result)`. Новая 3D-схема монтируется в отдельный контейнер через `window.createCityScene(container, {onSelect})` и возвращает объект с `update({districts, selected, affected, resultDistricts, mode})` и `destroy()`. `districts` — словарь исходных районов каталога, `resultDistricts` — словарь районов из валидного ответа симулятора или `null`; `mode` — `baseline` либо `result`. `onSelect(name)` передаёт название выбранного района. `affected` — массив названий районов, на которые распространяется подсвеченная мера; он показывает охват, а не рассчитанный Score. Схема условная, не географическая карта. Интерфейс, графики, оптимизатор и LLM не пересчитывают числовой Score и не подменяют результат `simulate()`.
 
 ## Вход и выход
 
