@@ -642,6 +642,7 @@ def advise(question, options, indicator_names=None):
     district_names = tuple(options[0]["result"]["districts"])
     allowed_options = _admissible_advice_options(question, options)
     selected_option, selected_facts = _advice_fallback(question, facts, district_names)
+    failure = None
     if api_key and model:
         try:
             proposed_option, proposed_facts = _advisor_model_selection(
@@ -650,8 +651,8 @@ def advise(question, options, indicator_names=None):
                 raise ValueError("Advisor contradicts an explicit district constraint")
             selected_option, selected_facts = proposed_option, proposed_facts
             source = "model"
-        except (OSError, HTTPException, ValueError, KeyError, TypeError, IndexError):
-            pass
+        except (OSError, HTTPException, ValueError, KeyError, TypeError, IndexError) as exc:
+            failure = exc
     label = next((option["label"] for option in options
                   if option["id"] == selected_option), None)
     intro = (f"С учётом вашего вопроса рассмотрите вариант «{label}». "
@@ -666,4 +667,9 @@ def advise(question, options, indicator_names=None):
         answer.update(provider=provider, model=model)
     else:
         answer["reason"] = "model_unavailable" if api_key and model else "model_not_configured"
+        if failure is not None:
+            diagnostics = _failure_diagnostics(failure)
+            answer["error_code"] = diagnostics["error_code"]
+            if "http_status" in diagnostics:
+                answer["http_status"] = diagnostics["http_status"]
     return answer

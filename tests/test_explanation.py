@@ -725,6 +725,61 @@ class ExplanationTests(unittest.TestCase):
             self.assertNotIn("secret", json.dumps(answer))
             mock_open.assert_called_once()
 
+    def test_advisor_transport_failures_expose_only_safe_diagnostics(self):
+        secret = "never-print-this-advisor-key"
+        options = [{"id": oid, "label": oid, "result": deepcopy(RESULT), "decisions": []}
+                   for oid in ("current", "one_change", "optimum")]
+        failures = [
+            (HTTPError("https://example.invalid/" + secret, 401, secret,
+                       {"Authorization": secret}, None), "authentication", 401),
+            (HTTPError("https://example.invalid/" + secret, 429, secret,
+                       {"Authorization": secret}, None), "rate_limited", 429),
+            (TimeoutError(secret), "timeout", None),
+        ]
+        for failure, code, status in failures:
+            with self.subTest(code=code), patch.dict(os.environ, {
+                    "OPENAI_API_KEY": secret, "OPENAI_MODEL": "test-model"}), \
+                    patch("src.explanation.request.urlopen", side_effect=failure) as transport:
+                answer = explanation.advise("Помочь Нуре", options)
+            self.assertEqual(answer["source"], "computed_facts")
+            self.assertEqual(answer["reason"], "model_unavailable")
+            self.assertEqual(answer["selected_option"], "none")
+            self.assertEqual(answer["error_code"], code)
+            expected_keys = {"text", "source", "selected_option", "reason", "error_code"}
+            if status is not None:
+                expected_keys.add("http_status")
+                self.assertEqual(answer["http_status"], status)
+            self.assertEqual(set(answer), expected_keys)
+            self.assertNotIn(secret, json.dumps(answer, ensure_ascii=False))
+            transport.assert_called_once()
+            if isinstance(failure, HTTPError):
+                failure.close()
+
+    def test_advisor_invalid_output_is_diagnosed_without_exposing_output(self):
+        secret = "never-print-this-model-output"
+        options = [{"id": oid, "label": oid, "result": deepcopy(RESULT), "decisions": []}
+                   for oid in ("current", "one_change", "optimum")]
+        with patch.dict(os.environ, {
+                "OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "test-model"}), \
+                patch("src.explanation.request.urlopen", return_value=FakeResponse(
+                    self.openai_response(secret))) as transport:
+            answer = explanation.advise("Помочь Нуре", options)
+        self.assertEqual(answer["source"], "computed_facts")
+        self.assertEqual(answer["reason"], "model_unavailable")
+        self.assertEqual(answer["error_code"], "invalid_model_output")
+        self.assertEqual(set(answer), {"text", "source", "selected_option", "reason",
+                                       "error_code"})
+        self.assertNotIn(secret, json.dumps(answer, ensure_ascii=False))
+        transport.assert_called_once()
+
+    def test_advisor_without_config_has_no_failure_diagnostics(self):
+        options = [{"id": oid, "label": oid, "result": deepcopy(RESULT), "decisions": []}
+                   for oid in ("current", "one_change", "optimum")]
+        answer = explanation.advise("Помочь Нуре", options)
+        self.assertEqual(answer["reason"], "model_not_configured")
+        self.assertEqual(set(answer), {"text", "source", "selected_option", "reason"})
+        self.no_network.assert_not_called()
+
     def test_advisor_selection_rejects_duplicate_keys_and_bad_ids(self):
         facts = {"current_overview": "fact", "one_change_overview": "fact"}
         cases = [None, '[]',
