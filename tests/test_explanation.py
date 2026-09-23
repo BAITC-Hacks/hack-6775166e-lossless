@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from src import explanation as explanation_module
 from src.explanation import explain, explain_comparison, model_settings
+from src.simulator import simulate
 
 
 RESULT = {
@@ -30,6 +31,19 @@ RESULT = {
     "applied_synergies": [{"measures": ["M10", "M12"], "district": "Нура", "indicator": "B1", "bonus": 2}],
     "critical_count": 1,
 }
+
+
+def saryarka_swap():
+    decisions = [
+        {"measure_id": "M7", "district": "Нура"},
+        {"measure_id": "M8", "district": "Нура"},
+        {"measure_id": "M10", "district": "Нура"},
+        {"measure_id": "M12", "district": None},
+        {"measure_id": "M5", "district": "Сарыарка"},
+    ]
+    removed = [decisions[-1]]
+    added = [{"measure_id": "M3", "district": "Нура"}]
+    return simulate(decisions), simulate(decisions[:-1] + added), removed, added
 
 
 class FakeResponse:
@@ -297,6 +311,32 @@ class ExplanationTests(unittest.TestCase):
                                         [{"measure_id": "M3", "district": "Нура"}])
         self.assertEqual(answer["source"], "computed_facts")
         self.assertIn("56,54 до 57,21", answer["text"])
+
+    def test_comparison_offline_always_shows_saryarka_loss(self):
+        current, proposed, removed, added = saryarka_swap()
+        self.assertTrue(current["valid"] and proposed["valid"])
+        loss = current["districts"]["Сарыарка"]["score"] - proposed["districts"]["Сарыарка"]["score"]
+        self.assertGreater(loss, 0)
+        self.assertEqual(explanation_module._fmt(loss), "1,21")
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "", "NVIDIA_MODEL": "",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}):
+            answer = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(answer["source"], "computed_facts")
+        self.assertIn(f"Районный балл Сарыарка снизится на {explanation_module._fmt(loss)}.",
+                      answer["text"])
+
+    def test_comparison_model_selection_cannot_hide_saryarka_loss(self):
+        current, proposed, removed, added = saryarka_swap()
+        loss = current["districts"]["Сарыарка"]["score"] - proposed["districts"]["Сарыарка"]["score"]
+        chosen = {"strengths": ["score_change"], "risks": ["weakest"],
+                  "tradeoffs": ["budget"]}
+        sdk, _ = fake_nvidia_sdk(json.dumps(chosen))
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "test-key", "NVIDIA_MODEL": "test-model"}), \
+                patch.dict(sys.modules, {"openai": sdk}):
+            answer = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(answer["source"], "model")
+        self.assertIn(f"Районный балл Сарыарка снизится на {explanation_module._fmt(loss)}.",
+                      answer["text"])
 
     def test_markdown_fenced_json_still_requires_verified_fact_ids(self):
         chosen = {"strengths": ["strength_indicator"], "risks": ["risk_negative"],

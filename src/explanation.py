@@ -144,7 +144,9 @@ def _render(facts, selections):
     names = {"strengths": "Сильные стороны", "risks": "Риски", "tradeoffs": "Компромиссы"}
     # Required computed facts remain visible even if the model omits their IDs.
     selections = {section: list(keys) for section, keys in selections.items()}
-    for section, required in (("risks", "risk_residual"), ("tradeoffs", "tradeoff_budget")):
+    for section, required in (("risks", "risk_residual"),
+                              ("tradeoffs", "tradeoff_budget"),
+                              ("risks", "district_decline")):
         if required in facts[section] and required not in selections[section]:
             selections[section].insert(0, required)
     return "\n".join(
