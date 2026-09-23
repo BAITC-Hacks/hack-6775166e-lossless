@@ -1142,7 +1142,8 @@ $("measure-dialog").addEventListener("close", () => {
   if (rerender) keepAnchorPosition($("measure-view"), renderMeasures);
   if (rerender) {
     const card = [...$("measure-cards").children].find((item) => item.dataset.measureId === measureId);
-    const focusTarget = opener?.isConnected ? opener : card?.querySelector(".measure-select") || $("view-district-measures");
+    const focusTarget = opener?.isConnected && opener !== document.body
+      ? opener : card?.querySelector(".measure-select") || $("view-district-measures");
     focusTarget.focus({ preventScroll: true });
   }
   syncScene();
