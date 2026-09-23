@@ -593,3 +593,58 @@ dialog>p:not(.dialog-label):not(.city-scope-note),.measure-facts,.dialog-label,.
 .coverage-chip.is-affected{border-color:var(--lime);background:#385046;color:var(--lime);box-shadow:inset 0 0 9px #d9ff5b28}
 @media(max-width:850px){.coverage-districts{grid-template-columns:repeat(5,minmax(0,1fr))}}
 @media(max-width:390px){.coverage-districts{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* Legible primary labels on narrow phones without widening the layout. */
+@media(max-width:430px){
+  body{font-size:15px}
+  .topbar .stage-link{font-size:11px;gap:4px}
+  .eyebrow{font-size:11px;letter-spacing:.9px}
+  .deck-readouts>span{min-width:0;padding:9px 7px;font-size:10px;letter-spacing:.2px;line-height:1.25}
+  .scene-topline,.scene-footline{font-size:10px;letter-spacing:.2px;line-height:1.3}
+  .city-deck .city3d__top,.city-deck .city3d__mode{font-size:10px}
+  .city-deck .city3d__district{min-height:54px}
+  .city-deck .city3d__district-index{font-size:10px}
+  .city-deck .city3d__district strong{font-size:14px}
+  .city-deck .city3d__district small{font-size:11px;letter-spacing:.2px}
+  .city-deck .city3d__legend,.city-deck .city3d__disclaimer{font-size:10px}
+  .inspector-profile{font-size:13px}
+  .inspector-score>span:first-child,.inspector-needs-heading{font-size:11px}
+  .need-label{font-size:13px}
+  .need-delta,.inspector-note{font-size:11px}
+  .district-inspector .button{font-size:12px}
+  .briefing-launch-copy,.mission-strip span{font-size:12px}
+  .measure-context,.catalog-heading>span{font-size:12px}
+  .measure-view button,.category-tab{font-size:11px}
+  .measure-category,.measure-relevance{font-size:11px;letter-spacing:.1px}
+  .measure-card h3{font-size:14px}
+  .measure-meta,.measure-select{font-size:11px}
+  .measure-cost small{font-size:11px}
+  .coverage-heading,.coverage-chip{font-size:10px}
+  .decision-copy strong{font-size:13px}
+  .decision-location,.budget-block p,.sign-hint{font-size:11px}
+  .score-card-label,.score-card-label>span{font-size:10px}
+  .score-card-bottom{font-size:11px}
+  .dialog-label,.effect,.district-option,.comparison-note{font-size:11px}
+}
+
+/* Report chart values must stay readable on the dark panel. */
+#district-chart.district-viz{color:#f3f8fb}
+#district-chart .district-viz__heading,
+#district-chart .district-viz__district-heading,
+#district-chart .district-viz__district-heading strong,
+#district-chart .district-viz__district-heading span{color:#f4fbff}
+#district-chart .district-viz__district-heading span{font-weight:800}
+#district-chart .district-viz__formula,
+#district-chart .district-viz__legend-item{color:#d3e5ee}
+#district-chart .district-viz__change{color:#e0ff83}
+#district-chart .district-viz__change--negative{color:#ffae9f}
+#district-chart .district-viz__note,
+#district-chart .district-viz__unchanged{color:#bcd0db}
+@media(max-width:430px){
+  #district-chart .district-viz__heading{font-size:15px}
+  #district-chart .district-viz__formula{font-size:13px}
+  #district-chart .district-viz__district-heading{font-size:14px}
+  #district-chart .district-viz__change,
+  #district-chart .district-viz__legend-item,
+  #district-chart .district-viz__note{font-size:11px}
+}
