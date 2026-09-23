@@ -712,7 +712,8 @@
             (CITY_FORMS.has(item.measure_id) ? item.district === null : districtButtons.has(item.district))) : [],
           measures: next.measures && typeof next.measures === "object" ? next.measures : {}
         };
-        modeLabel.textContent = data.mode === "result" ? "ПОСЛЕ РЕШЕНИЙ" : "ИСХОДНОЕ СОСТОЯНИЕ";
+        modeLabel.textContent = data.mode === "result" ? "ПОСЛЕ РЕШЕНИЙ" :
+          data.decisions.length ? "ПРОЕКТ ПАКЕТА / ДО РАСЧЁТА" : "ИСХОДНОЕ СОСТОЯНИЕ";
         root.classList.toggle("is-result", data.mode === "result");
         root.classList.toggle("has-affected", data.affected.length > 0);
         refreshLegend();

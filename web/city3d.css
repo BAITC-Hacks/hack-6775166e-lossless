@@ -84,9 +84,11 @@
   box-shadow: 0 0 0 4px #dce6b4, 0 0 0 5px var(--scene-green);
 }
 .city3d__mode {
+  max-width: 52%;
   padding: 6px 8px;
   border: 1px solid var(--scene-green);
   background: var(--scene-panel);
+  text-align: right;
 }
 .city3d.is-result .city3d__mode { background: var(--scene-lime); }
 
