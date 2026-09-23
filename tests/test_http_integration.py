@@ -99,6 +99,14 @@ class HTTPIntegrationTests(unittest.TestCase):
         self.assertEqual(result.pop("explanation")["source"], "computed_facts")
         self.assertEqual(result, simulate(EXAMPLE))
 
+    def test_unexpected_explanation_failure_keeps_contract_and_score(self):
+        with patch.object(explanation, "explain", side_effect=RuntimeError("test failure")):
+            status, result = self.request("/api/simulate", EXAMPLE)
+        self.assertEqual(status, 200)
+        self.assertAlmostEqual(result["score"], 56.54307, places=8)
+        self.assertEqual(result["explanation"]["source"], "computed_facts")
+        self.assertEqual(result["explanation"]["reason"], "model_unavailable")
+
     def test_invalid_plans_have_reasons_without_score_or_model_calls(self):
         with patch.object(explanation, "explain") as explain, \
                 patch.object(explanation, "explain_comparison") as compare:
