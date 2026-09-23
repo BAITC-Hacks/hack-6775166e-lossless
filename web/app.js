@@ -310,7 +310,7 @@ function previewDrop(drag, clientX, clientY) {
     if (target?.element) target.element.classList.add("is-hot-drop");
     if (key) $("drop-board-hint").textContent = error || `${drag.measure.id} → ${target.name}`;
     else $("drop-board-hint").textContent = city(drag.measure) ? "Цель: весь город" : "Выберите один из пяти районов";
-    try { state.scene?.setDropPreview?.(target?.kind === "district" ? target.name : null); }
+    try { state.scene?.setDropPreview?.(target?.kind === "district" && !error ? target.name : null); }
     catch (error) { console.error("City drop preview failed", error); }
   }
 }
@@ -351,11 +351,13 @@ function finishMeasureDrag(event, cancelled = false) {
   state.hoverMeasureId = null;
   try { state.scene?.setDropPreview?.(null); } catch (_) { /* optional scene API */ }
   if (drag.ghost) {
-    if (target && !error && target.element) {
-      const rect = target.element.getBoundingClientRect();
+    if (target && !error) {
+      const rect = target.element?.getBoundingClientRect();
+      const centerX = rect ? rect.left + rect.width / 2 : event.clientX;
+      const centerY = rect ? rect.top + rect.height / 2 : event.clientY;
       drag.ghost.classList.add("is-snapping");
-      drag.ghost.style.left = `${rect.left + rect.width / 2 - drag.ghost.offsetWidth / 2}px`;
-      drag.ghost.style.top = `${rect.top + rect.height / 2 - drag.ghost.offsetHeight / 2}px`;
+      drag.ghost.style.left = `${centerX - drag.ghost.offsetWidth / 2}px`;
+      drag.ghost.style.top = `${centerY - drag.ghost.offsetHeight / 2}px`;
       setTimeout(() => drag.ghost.remove(), 180);
     } else drag.ghost.remove();
   }
