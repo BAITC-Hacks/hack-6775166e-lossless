@@ -1,454 +1,580 @@
 "use strict";
 
+// The server owns simulation and Score. This interface only composes decisions
+// and displays catalogue fields and server results.
 const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change" };
-const state = { catalog: null, decisions: Array.from({ length: 5 }, () => ({ measure_id: "", district: null })), currentResult: null, recommendation: null, revision: 0 };
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0 };
 const $ = (id) => document.getElementById(id);
-const formatScore = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(2).replace(".", ",") : "—";
-const text = (tag, value, className) => {
+const finite = (value) => typeof value === "number" && Number.isFinite(value);
+const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
+const categoryIcons = { "Транспорт": "bus", "Экология": "leaf", "Соцсфера": "school", "Безопасность": "shield", "Сервисы": "service" };
+const categoryLabels = { "Соцсфера": "Соцсфера", "Экология": "Экология", "Сервисы": "Сервисы" };
+const measureById = (id) => state.measures.find((measure) => measure.id === id);
+const districtNames = () => Object.keys(state.catalog?.districts || {});
+const budget = () => finite(state.catalog?.budget) ? state.catalog.budget : 100;
+const horizon = () => finite(state.catalog?.horizon_quarters) ? state.catalog.horizon_quarters : 8;
+const city = (measure) => measure.scope === "city";
+const locked = () => Boolean(state.busy);
+const costOf = (decisions) => decisions.reduce((sum, decision) => sum + (measureById(decision.measure_id)?.cost || 0), 0);
+const node = (tag, content, className) => {
   const element = document.createElement(tag);
-  element.textContent = String(value ?? "");
+  if (content !== undefined && content !== null) element.textContent = String(content);
   if (className) element.className = className;
   return element;
 };
-
-function districts() {
-  const source = state.catalog?.districts;
-  if (Array.isArray(source)) return source.map((item) => typeof item === "string" ? item : item.name || item.id).filter(Boolean);
-  if (source && typeof source === "object") return Object.keys(source);
-  return [];
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "icon");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
 }
-
-function measures() {
-  const source = state.catalog?.measures;
-  const list = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, value]) => ({ id, ...value }));
-  return list.map((item) => ({
-    ...item,
-    id: item.id || item.measure_id || item.code,
-    name: item.name || item.title || item.label || "Мероприятие",
-    category: item.category || item.direction || item.sector || "Другое",
-    cost: Number(item.cost ?? item.price ?? 0),
-    scope: item.scope || item.type || item.level || "Район"
-  })).filter((item) => item.id).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+function announce(message) { $("announcer").textContent = message; }
+function indicatorName(key) { return state.catalog.indicators?.[key]?.name || key; }
+function notice(message = "", error = false) {
+  $("planner-notice").textContent = message;
+  $("planner-notice").hidden = !message;
+  $("planner-notice").classList.toggle("is-error", error);
 }
-
-function isCity(measure) {
-  return /город|city|global/i.test(String(measure?.scope || ""));
+function syncNavigation() {
+  document.querySelectorAll("[data-stage]").forEach((button) => {
+    const stage = button.dataset.stage;
+    button.disabled = (stage !== "briefing" && !state.catalog) || (stage === "report" && !state.result);
+    if (!button.classList.contains("stage-link")) return;
+    button.classList.toggle("is-active", stage === state.stage);
+    button.classList.toggle("is-complete", stage === "briefing" && state.stage !== "briefing" || stage === "planner" && state.stage === "report");
+    if (stage === state.stage) button.setAttribute("aria-current", "step");
+    else button.removeAttribute("aria-current");
+  });
 }
-
-function selectedMeasure(id) { return measures().find((measure) => measure.id === id); }
-
-function option(value, label) {
-  const element = document.createElement("option");
-  element.value = value;
-  element.textContent = label;
-  return element;
+function setStage(stage) {
+  if (!state.catalog || !["briefing", "planner", "report"].includes(stage) || stage === "report" && !state.result) return;
+  state.stage = stage;
+  ["briefing", "planner", "report"].forEach((name) => { $(`stage-${name}`).hidden = name !== stage; });
+  syncNavigation();
+  window.scrollTo({ top: 0, behavior: "instant" });
+  const heading = $(`stage-${stage}`).querySelector("h1");
+  heading.setAttribute("tabindex", "-1");
+  heading.focus({ preventScroll: true });
 }
-
+function validate(decisions, requireFive = false) {
+  const errors = [];
+  if (requireFive && decisions.length !== 5) errors.push("Для подписания нужно ровно пять распоряжений.");
+  if (decisions.length > 5) errors.push("В пакете уже пять распоряжений. Сначала уберите одно из них.");
+  const ids = new Set();
+  const counts = {};
+  decisions.forEach((decision) => {
+    const measure = measureById(decision.measure_id);
+    if (!measure) { errors.push("В пакете есть неизвестное мероприятие."); return; }
+    if (ids.has(measure.id)) errors.push("Каждое мероприятие можно выбрать только один раз.");
+    ids.add(measure.id);
+    counts[measure.category] = (counts[measure.category] || 0) + 1;
+    if (city(measure) && decision.district !== null) errors.push("Для городской меры район не указывается.");
+    if (!city(measure) && !districtNames().includes(decision.district)) errors.push("Выберите район для распоряжения.");
+  });
+  Object.entries(counts).forEach(([category, count]) => {
+    if (count > 2) errors.push(`В направлении «${category}» уже две меры. Выберите другое направление.`);
+  });
+  if (costOf(decisions) > budget()) errors.push(`Не хватает ${format(costOf(decisions) - budget(), 0)} ед. бюджета. Замените или уберите другое распоряжение.`);
+  // Catalogue conflict metadata is optional; the server always validates again.
+  for (const conflict of state.catalog?.conflicts || []) {
+    if (!Array.isArray(conflict.measures) || conflict.measures.length !== 2) continue;
+    const first = decisions.find((item) => item.measure_id === conflict.measures[0]);
+    const second = decisions.find((item) => item.measure_id === conflict.measures[1]);
+    if (!first || !second) continue;
+    if (conflict.scope === "any") errors.push(`${first.measure_id} и ${second.measure_id} несовместимы во всех районах.`);
+    else if (conflict.scope === "same_district" && first.district && first.district === second.district) errors.push(`${first.measure_id} и ${second.measure_id} нельзя реализовать вместе в районе ${first.district}.`);
+  }
+  return [...new Set(errors)];
+}
+function setDecisions(decisions, message) {
+  if (locked()) return;
+  state.decisions = decisions.map((item) => ({ measure_id: item.measure_id, district: item.district }));
+  state.revision += 1;
+  state.result = null;
+  state.proposal = null;
+  $("comparison").hidden = true;
+  $("plan-errors").hidden = true;
+  syncNavigation();
+  renderPlanner();
+  notice("");
+  if (message) announce(message);
+}
+function renderBriefing() {
+  $("briefing-budget").textContent = format(budget(), 0);
+  $("briefing-horizon").textContent = format(horizon(), 0);
+  $("base-score").textContent = format(state.catalog.base_score);
+  const host = $("district-cards");
+  host.replaceChildren();
+  const entries = Object.entries(state.catalog.districts);
+  const knownScores = entries.filter(([, district]) => finite(district.score));
+  const lowest = knownScores.length ? Math.min(...knownScores.map(([, district]) => district.score)) : null;
+  entries.forEach(([name, district], index) => {
+    const vulnerable = finite(lowest) && district.score === lowest;
+    const card = node("article", null, `district-card${vulnerable ? " is-vulnerable" : ""}`);
+    const top = node("div", null, "district-card-top");
+    top.append(node("span", `РАЙОН 0${index + 1}`, "district-index"));
+    if (vulnerable) top.append(node("span", "Больше внимания", "district-tag"));
+    const heading = node("div", null, "district-card-top");
+    heading.append(node("h3", name), node("span", format(district.score), "district-base"));
+    card.append(top, heading, node("p", typeof district.profile === "string" ? district.profile : "Изучите исходные показатели района.", "district-profile"));
+    const meter = node("div", null, "district-card-meter");
+    const fill = node("span");
+    fill.style.width = `${finite(district.score) ? Math.max(0, Math.min(100, district.score)) : 0}%`;
+    meter.setAttribute("aria-hidden", "true");
+    meter.append(fill);
+    const needs = node("div", null, "district-needs");
+    Object.entries(district.indicators || {}).filter(([, value]) => finite(value)).sort((a, b) => a[1] - b[1]).slice(0, 2).forEach(([key, value]) => {
+      const line = node("div", null, `district-need${value < 40 ? " is-critical" : ""}`);
+      line.append(node("span", indicatorName(key)), node("b", format(value, 0)));
+      needs.append(line);
+    });
+    card.append(meter, needs);
+    host.append(card);
+  });
+}
+function renderCategories() {
+  const host = $("category-tabs");
+  host.replaceChildren();
+  const categories = ["Все", ...new Set(state.measures.map((item) => item.category))];
+  categories.forEach((category) => {
+    const button = node("button", null, `category-tab${state.category === category ? " is-active" : ""}`);
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(state.category === category));
+    if (category !== "Все") button.append(icon(categoryIcons[category] || "city"));
+    button.append(node("span", categoryLabels[category] || category));
+    button.addEventListener("click", () => {
+      state.category = category;
+      renderCategories();
+      renderMeasures();
+      // Restore keyboard focus after replacing the filter controls.
+      [...host.children].find((item) => item.getAttribute("aria-pressed") === "true")?.focus({ preventScroll: true });
+    });
+    host.append(button);
+  });
+}
+function renderMeasures() {
+  const host = $("measure-cards");
+  host.replaceChildren();
+  const visible = state.measures.filter((item) => state.category === "Все" || item.category === state.category);
+  $("catalog-count").textContent = `${visible.length} из ${state.measures.length} мер`;
+  visible.forEach((measure) => {
+    const selected = state.decisions.some((decision) => decision.measure_id === measure.id);
+    const card = node("article", null, `measure-card${selected ? " is-selected" : ""}`);
+    card.dataset.measureId = measure.id;
+    const top = node("div", null, "measure-card-top");
+    const symbol = node("span", null, "category-icon");
+    symbol.dataset.category = measure.category;
+    symbol.append(icon(categoryIcons[measure.category] || "city"));
+    const price = node("span", format(measure.cost, 0), "measure-cost");
+    price.append(node("small", "ед."));
+    top.append(symbol, price);
+    const meta = node("div", null, "measure-meta");
+    const scope = node("span");
+    scope.append(icon("city"), document.createTextNode(city(measure) ? "Весь город" : "Один район"));
+    meta.append(scope);
+    if (finite(measure.lag_quarters)) {
+      const lag = node("span");
+      lag.append(icon("clock"), document.createTextNode(`Лаг ${measure.lag_quarters} кв.`));
+      meta.append(lag);
+    }
+    const button = node("button", null, "measure-select");
+    button.type = "button";
+    button.disabled = selected || locked();
+    button.setAttribute("aria-label", selected ? `${measure.id} уже в пакете` : `Выбрать ${measure.id}: ${measure.name}`);
+    button.append(node("span", selected ? "В вашем пакете" : "Рассмотреть меру"), icon(selected ? "check" : "plus"));
+    button.addEventListener("click", () => openMeasure(measure.id));
+    card.append(top, node("p", `${measure.id} / ${categoryLabels[measure.category] || measure.category}`, "measure-category"), node("h3", measure.name), meta, button);
+    host.append(card);
+  });
+}
 function renderSlots() {
   const host = $("decision-slots");
   host.replaceChildren();
-  state.decisions.forEach((decision, index) => {
-    const row = text("div", "", "decision-row");
-    row.append(text("span", String(index + 1).padStart(2, "0"), "decision-number"));
-
-    const measureField = text("label", "", "measure-field");
-    measureField.append(text("span", "Мероприятие", "field-label"));
-    const measureSelect = document.createElement("select");
-    measureSelect.setAttribute("aria-label", `Мероприятие ${index + 1}`);
-    measureSelect.append(option("", "Выбрать меру"));
-    measures().forEach((measure) => measureSelect.append(option(measure.id, `${measure.id} · ${measure.name} · ${measure.cost}`)));
-    measureSelect.value = decision.measure_id;
-    measureSelect.addEventListener("change", () => {
-      decision.measure_id = measureSelect.value;
-      decision.district = null;
-      renderSlots();
-      updateBudget();
-      hideResult();
-    });
-    measureField.append(measureSelect);
-    row.append(measureField);
-
-    const districtField = text("label", "", "district-field");
-    districtField.append(text("span", "Район", "field-label"));
-    const districtSelect = document.createElement("select");
-    districtSelect.setAttribute("aria-label", `Район для решения ${index + 1}`);
-    const selected = selectedMeasure(decision.measure_id);
-    if (!selected) {
-      districtSelect.append(option("", "Сначала мера"));
-      districtSelect.disabled = true;
-    } else if (isCity(selected)) {
-      districtSelect.append(option("", "Весь город"));
-      districtSelect.disabled = true;
-      decision.district = null;
-    } else {
-      districtSelect.append(option("", "Выбрать район"));
-      districts().forEach((name) => districtSelect.append(option(name, name)));
-      districtSelect.value = decision.district || "";
-      districtSelect.addEventListener("change", () => {
-        decision.district = districtSelect.value || null;
-        hideResult();
+  for (let index = 0; index < 5; index += 1) {
+    const decision = state.decisions[index];
+    const slot = node("div", null, `decision-slot${decision ? "" : " is-empty"}`);
+    slot.append(node("span", String(index + 1).padStart(2, "0"), "decision-number"));
+    if (!decision) slot.append(node("span", "Место для вашего решения"));
+    else {
+      const measure = measureById(decision.measure_id);
+      const copy = node("div", null, "decision-copy");
+      copy.append(node("strong", measure.name));
+      const location = node("button", null, "decision-location");
+      location.type = "button";
+      location.disabled = city(measure) || locked();
+      location.append(node("span", city(measure) ? "Весь город" : decision.district));
+      if (!city(measure)) location.append(icon("arrow"));
+      location.setAttribute("aria-label", `Район для ${measure.id}: ${decision.district || "весь город"}${city(measure) ? "" : ". Изменить район"}`);
+      location.addEventListener("click", () => openMeasure(measure.id, index));
+      copy.append(location);
+      const right = node("div", null, "decision-right");
+      const remove = node("button", null, "icon-button");
+      remove.type = "button";
+      remove.disabled = locked();
+      remove.setAttribute("aria-label", `Убрать ${measure.id}: ${measure.name}`);
+      remove.append(icon("close"));
+      remove.addEventListener("click", () => {
+        if (locked()) return;
+        setDecisions(state.decisions.filter((_, position) => position !== index), `Распоряжение ${measure.id} убрано из пакета.`);
+        const next = host.querySelector("button:not(:disabled)") || $("catalog-title");
+        if (next.tagName !== "BUTTON") next.setAttribute("tabindex", "-1");
+        next.focus({ preventScroll: true });
       });
+      right.append(node("span", format(measure.cost, 0)), remove);
+      slot.append(copy, right);
     }
-    districtField.append(districtSelect);
-    row.append(districtField);
-    host.append(row);
-  });
+    host.append(slot);
+  }
 }
-
-function renderCatalog() {
-  const host = $("catalog-groups");
-  host.replaceChildren();
-  const groups = new Map();
-  measures().forEach((measure) => {
-    if (!groups.has(measure.category)) groups.set(measure.category, []);
-    groups.get(measure.category).push(measure);
-  });
-  groups.forEach((items, category) => {
-    const group = text("section", "", "catalog-group");
-    const heading = text("h3", category);
-    heading.append(text("span", String(items.length).padStart(2, "0")));
-    group.append(heading);
-    items.forEach((measure) => {
-      const card = text("div", "", "measure-card");
-      const top = text("div", "", "measure-top");
-      const name = text("div", "", "measure-name");
-      name.append(text("span", measure.id, "measure-id"), document.createTextNode(measure.name));
-      top.append(name, text("span", measure.cost, "measure-cost"));
-      card.append(top, text("p", isCity(measure) ? "Весь город" : "Для выбранного района", "measure-meta"));
-      group.append(card);
-    });
-    host.append(group);
-  });
-}
-
 function updateBudget() {
-  const used = state.decisions.reduce((total, decision) => total + (selectedMeasure(decision.measure_id)?.cost || 0), 0);
-  $("budget-used").textContent = String(used);
-  $("budget-fill").style.width = `${Math.min(used, 100)}%`;
-  $("budget-progress").setAttribute("aria-valuenow", String(Math.min(used, 100)));
-  $("budget-progress").parentElement.classList.toggle("over-budget", used > 100);
-  $("budget-hint").textContent = used > 100 ? `Превышение бюджета на ${used - 100} ед. Сервер вернёт причину отказа.` : `Остаток ${100 - used} ед. не повышает Score.`;
+  const spent = costOf(state.decisions);
+  const missing = 5 - state.decisions.length;
+  $("mobile-plan-count").textContent = `${state.decisions.length} из 5 решений`;
+  $("mobile-plan-budget").textContent = `${format(spent, 0)} / ${format(budget(), 0)} ед.`;
+  $("decision-count").textContent = `${state.decisions.length} / 5`;
+  $("budget-used").textContent = format(spent, 0);
+  document.querySelector(".budget-total").textContent = `/ ${format(budget(), 0)}`;
+  $("budget-fill").style.width = `${Math.min(100, spent / budget() * 100)}%`;
+  $("budget-progress").setAttribute("aria-valuemax", String(budget()));
+  $("budget-progress").setAttribute("aria-valuenow", String(Math.min(spent, budget())));
+  $("budget-progress").closest(".budget-block").classList.toggle("over-budget", spent > budget());
+  $("budget-hint").textContent = spent > budget() ? `Бюджет превышен на ${format(spent - budget(), 0)} ед.` : `На оставшиеся решения: ${format(budget() - spent, 0)} ед.`;
+  const errors = validate(state.decisions, true);
+  $("submit-plan").disabled = !!state.busy || errors.length > 0;
+  $("submit-plan").querySelector("span").textContent = state.busy === "simulate" ? "Считаем последствия…" : "Подписать распоряжения";
+  $("suggest-plan").disabled = !!state.busy;
+  $("compare-plan").disabled = !!state.busy || !state.result;
+  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "Сравнить с оптимумом";
+  $("recommend-change").disabled = !!state.busy || !state.result;
+  $("recommend-change").querySelector("span").textContent = state.busy === "recommend" ? "Ищем одну замену…" : "Улучшить одно распоряжение";
+  $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "План советника";
+  $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем пакет и готовим итоговый доклад" : state.busy === "optimize" ? "Советник готовит предложение. Ваш пакет сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "распоряжение" : missing < 5 ? "распоряжения" : "распоряжений"}` : errors[0] || "Пакет готов к проверке и расчёту";
 }
-
-function hideResult() {
-  state.currentResult = null;
-  state.recommendation = null;
-  state.revision += 1;
-  $("result-section").hidden = true;
-  $("comparison").hidden = true;
-  $("comparison-panel").hidden = true;
-  $("comparison-error").hidden = true;
-  optimizerError("");
+function renderPlanner() { renderCategories(); renderMeasures(); renderSlots(); updateBudget(); }
+function setBusy(kind) {
+  state.busy = kind;
+  $("stage-planner").setAttribute("aria-busy", String(!!kind));
+  renderMeasures(); renderSlots(); updateBudget();
 }
-
-function optimizerError(message) {
-  const host = $("optimizer-error");
-  host.textContent = message || "";
-  host.hidden = !message;
+function pendingDecisions() {
+  const pending = state.pending;
+  const decision = { measure_id: pending.measureId, district: pending.district };
+  return pending.editingIndex === null ? [...state.decisions, decision] : state.decisions.map((item, index) => index === pending.editingIndex ? decision : item);
 }
-
-function showErrors(errors) {
-  state.currentResult = null;
-  state.recommendation = null;
-  $("comparison").hidden = true;
-  $("comparison-panel").hidden = true;
-  $("comparison-error").hidden = true;
-  $("result-section").hidden = false;
-  $("valid-result").hidden = true;
-  const host = $("result-errors");
-  host.hidden = false;
-  host.replaceChildren(text("strong", "Сценарий не рассчитан"));
-  const list = document.createElement("ul");
-  (Array.isArray(errors) ? errors : [errors]).filter(Boolean).forEach((error) => list.append(text("li", typeof error === "string" ? error : error.message || JSON.stringify(error))));
-  host.append(list);
-  $("result-section").scrollIntoView({ behavior: "smooth", block: "start" });
+function updatePending() {
+  if (!state.pending) return;
+  const errors = validate(pendingDecisions());
+  const validation = $("measure-validation");
+  validation.replaceChildren();
+  errors.forEach((error) => validation.append(node("p", error)));
+  validation.classList.toggle("is-neutral", errors.length === 1 && errors[0] === "Выберите район для распоряжения.");
+  $("confirm-measure").disabled = errors.length > 0 || locked();
 }
-
-function districtRows(result) {
-  const items = result.districts;
-  if (Array.isArray(items)) return items.map((entry) => [entry.name || entry.id || entry.district, entry]);
-  return Object.entries(items || {});
-}
-
-function renderDistricts(result) {
-  const chartHost = $("district-chart");
-  chartHost.replaceChildren();
-  if (typeof window.renderDistrictCharts === "function") {
-    try { window.renderDistrictCharts(chartHost, result); }
-    catch (error) { console.error("Ошибка визуализации районов:", error); chartHost.replaceChildren(); }
-  }
-  const host = $("district-list");
-  host.replaceChildren();
-  districtRows(result).forEach(([name, values]) => {
-    const row = text("div", "", "district-row");
-    const value = typeof values === "number" ? values : values.score ?? values.district_score ?? values.value;
-    const baseline = typeof values === "object" ? values.base_score ?? values.baseline ?? state.catalog?.districts?.[name]?.score : undefined;
-    const deltaSource = result.deltas?.[name];
-    const delta = typeof deltaSource === "number" ? deltaSource : values?.delta ?? values?.score_delta ?? (Number.isFinite(Number(baseline)) && Number.isFinite(Number(value)) ? Number(value) - Number(baseline) : undefined);
-    row.append(text("span", name), text("b", formatScore(value)));
-    const change = text("span", Number.isFinite(Number(delta)) ? `${Number(delta) >= 0 ? "+" : ""}${formatScore(delta)}` : "", "delta");
-    if (Number(delta) < 0) change.classList.add("negative");
-    row.append(change);
-    host.append(row);
+function openMeasure(measureId, editingIndex = null) {
+  if (locked()) return;
+  const measure = measureById(measureId);
+  if (!measure) return;
+  state.pending = { measureId, editingIndex, district: editingIndex !== null ? state.decisions[editingIndex].district : null };
+  $("measure-category").textContent = `${measure.id} / ${categoryLabels[measure.category] || measure.category}`;
+  $("measure-title").textContent = measure.name;
+  const facts = $("measure-facts");
+  facts.replaceChildren();
+  const price = node("span"); price.append(node("strong", format(measure.cost, 0)), document.createTextNode("ед. бюджета"));
+  facts.append(price);
+  if (finite(measure.lag_quarters)) facts.append(node("span", `Начало эффекта через ${measure.lag_quarters} кв.`));
+  const effects = $("measure-effects"); effects.replaceChildren();
+  const effectEntries = Object.entries(measure.full_effects || {}).filter(([, value]) => finite(value));
+  effectEntries.forEach(([key, value]) => {
+    const effect = node("span", null, `effect${value < 0 ? " is-negative" : ""}`);
+    effect.append(node("span", indicatorName(key)), node("b", `${value > 0 ? "+" : ""}${format(value, Number.isInteger(value) ? 0 : 1)}`));
+    effects.append(effect);
   });
-  if (!host.childElementCount && !chartHost.childElementCount) host.append(text("p", "Подробные показатели районов не получены."));
+  if (!effectEntries.length) effects.append(node("span", "Эффекты покажем в итоговом расчёте.", "effect"));
+  $("district-choice-section").hidden = city(measure);
+  $("city-scope-note").hidden = !city(measure);
+  const options = $("district-options"); options.replaceChildren();
+  if (!city(measure)) districtNames().forEach((name) => {
+    const label = node("label", null, "district-option");
+    const input = document.createElement("input");
+    input.type = "radio"; input.name = "measure-district"; input.value = name;
+    input.checked = state.pending.district === name;
+    input.addEventListener("change", () => { state.pending.district = name; updatePending(); });
+    label.append(input, node("span", name), node("small", format(state.catalog.districts[name].score)));
+    options.append(label);
+  });
+  $("confirm-measure").replaceChildren(document.createTextNode(editingIndex === null ? "Включить в пакет" : "Сохранить район"), icon(editingIndex === null ? "plus" : "check"));
+  updatePending();
+  $("measure-dialog").showModal();
+  const focusTarget = options.querySelector("input:checked") || options.querySelector("input") || $("confirm-measure");
+  if (!focusTarget.disabled) focusTarget.focus();
 }
-
-function renderExplanation(explanation) {
-  const host = $("explanation");
-  host.replaceChildren();
-  if (typeof explanation === "string" && explanation.trim()) {
-    explanation.trim().split(/\n\s*\n/).forEach((paragraph) => host.append(text("p", paragraph)));
-  } else if (typeof explanation?.text === "string") {
-    host.append(text("p", explanation.text));
-    if (explanation.source === "computed_facts") host.append(text("small", "Проверяемое объяснение по рассчитанным фактам. AI-модель недоступна.", "explanation-source"));
-  } else if (explanation && typeof explanation === "object") {
-    Object.entries(explanation).forEach(([key, value]) => {
-      if (value == null || value === "") return;
-      host.append(text("h4", key.replaceAll("_", " ")));
-      if (Array.isArray(value)) {
-        const list = document.createElement("ul");
-        value.forEach((item) => list.append(text("li", typeof item === "string" ? item : JSON.stringify(item))));
-        host.append(list);
-      } else host.append(text("p", typeof value === "string" ? value : JSON.stringify(value)));
-    });
-  } else host.append(text("p", "Объяснение недоступно. Числовой результат рассчитан отдельно."));
+function confirmMeasure() {
+  if (!state.pending || locked()) return;
+  const decisions = pendingDecisions();
+  if (validate(decisions).length) { updatePending(); return; }
+  const id = state.pending.measureId;
+  const slotIndex = decisions.findIndex((decision) => decision.measure_id === id);
+  $("measure-dialog").close();
+  setDecisions(decisions, `Распоряжение ${id} в пакете. Выбрано ${decisions.length} из пяти.`);
+  const focusTarget = $("decision-slots").children[slotIndex]?.querySelector("button:not(:disabled)");
+  focusTarget?.focus({ preventScroll: true });
 }
-
-function showResult(result) {
-  if (!result?.valid || !Number.isFinite(Number(result.score))) {
-    showErrors(result?.errors?.length ? result.errors : ["Сервер не подтвердил корректный расчёт."]);
-    return;
-  }
-  $("result-section").hidden = false;
-  $("comparison").hidden = true;
-  $("comparison-panel").hidden = true;
-  $("comparison-error").hidden = true;
-  $("result-errors").hidden = true;
-  $("valid-result").hidden = false;
-  const base = Number(result.base_score ?? state.catalog.base_score);
-  const score = Number(result.score);
-  $("result-base").textContent = formatScore(base);
-  $("result-score").textContent = formatScore(score);
-  $("result-change").textContent = `${score >= base ? "+" : ""}${formatScore(score - base)}`;
-  renderDistricts(result);
-  renderExplanation(result.explanation);
-  const details = $("result-details");
-  details.replaceChildren();
-  details.append(text("span", `Стоимость: ${result.cost ?? "—"} / 100`, "detail-pill"));
-  details.append(text("span", `Остаток: ${result.remaining_budget ?? "—"}`, "detail-pill"));
-  const synergies = result.applied_synergies;
-  if (Array.isArray(synergies) && synergies.length) details.append(text("span", `Синергии: ${synergies.length}`, "detail-pill"));
-  $("result-section").scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function decisionLabel(decision) {
-  return `${decision.measure_id}/${decision.district || "город"}`;
-}
-
-function showOneChange(result) {
-  $("comparison").hidden = true;
-  const host = $("comparison-panel");
-  const scores = $("comparison-scores");
-  scores.replaceChildren();
-  const before = text("div", "", "comparison-score");
-  before.append(text("small", "ВАШ ПЛАН"), text("strong", formatScore(result.current.score)), text("span", `Стоимость ${result.current.cost}`));
-  const after = text("div", "", "comparison-score proposed");
-  after.append(text("small", "ПОСЛЕ ЗАМЕНЫ"), text("strong", formatScore(result.proposed.score)), text("span", `Стоимость ${result.proposed.cost}`));
-  scores.append(before, text("span", "→", "comparison-arrow"), after);
-  const improved = Number(result.score_delta) > 0;
-  $("comparison-swap").textContent = improved
-    ? `${result.removed.map(decisionLabel).join(", ")} → ${result.added.map(decisionLabel).join(", ")}. Прирост Score: +${Number(result.score_delta).toFixed(5).replace(".", ",")}.`
-    : "Улучшение заменой одного решения не найдено.";
-  const explanation = $("comparison-explanation");
-  explanation.replaceChildren(text("p", result.explanation?.text || "Объяснение недоступно."));
-  if (result.explanation?.source === "computed_facts") explanation.append(text("small", "Объяснение по рассчитанным фактам. AI-модель недоступна.", "explanation-source"));
-  const apply = $("apply-change");
-  apply.hidden = !improved;
-  apply.onclick = async () => {
-    state.decisions = result.decisions.map((item) => ({ ...item }));
-    state.revision += 1;
-    state.recommendation = null;
-    renderSlots();
-    updateBudget();
-    await calculate();
-  };
-  host.hidden = false;
-  host.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-async function recommendChange() {
-  if (!state.currentResult?.valid) return;
-  const button = $("recommend-change");
-  const revision = state.revision;
-  button.disabled = true;
-  $("comparison-error").hidden = true;
-  $("comparison-panel").hidden = true;
-  const decisions = state.decisions.map((item) => ({ measure_id: item.measure_id, district: item.district }));
+async function requestJson(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetch(API.recommendChange, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions })
-    });
-    const result = await response.json();
-    if (!response.ok || !result?.valid) throw new Error(result?.errors?.map((error) => error.message || error).join(" ") || result?.error || `HTTP ${response.status}`);
-    if (!Array.isArray(result.decisions) || result.decisions.length !== 5 || !Number.isFinite(Number(result.proposed?.score))) throw new Error("неполное сравнение от сервера");
-    if (revision !== state.revision || !state.currentResult?.valid) return;
-    showOneChange(result);
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally { clearTimeout(timeout); }
+}
+function showPlanErrors(errors) {
+  const host = $("plan-errors");
+  host.replaceChildren();
+  const list = node("ul");
+  errors.forEach((error) => list.append(node("li", typeof error === "string" ? error : "Сервер отклонил пакет решений.")));
+  host.append(list); host.hidden = false;
+  state.result = null; syncNavigation();
+  announce("Пакет не подписан. Проверьте причины рядом с распоряжениями.");
+  host.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+function displayExplanation(explanation) {
+  const host = $("explanation"); host.replaceChildren();
+  const source = $("explanation-source");
+  if (explanation?.source === "model") source.textContent = `AI-разбор на основе рассчитанных фактов${explanation.provider === "nvidia" ? " · NVIDIA" : ""}`;
+  else if (explanation?.source === "computed_facts") source.textContent = "AI-модель недоступна. Показан разбор по рассчитанным фактам.";
+  else source.textContent = "Пояснение к результату сервера";
+  const content = typeof explanation === "string" ? explanation : explanation?.text;
+  if (typeof content !== "string" || !content.trim()) { host.append(node("p", "Советник сейчас недоступен. Результаты расчёта сохранены в докладе.")); return; }
+  content.trim().split(/\n+/).filter(Boolean).forEach((line) => {
+    const match = line.match(/^(Сильные стороны|Риски|Компромиссы):\s*(.*)$/);
+    if (match) {
+      const section = node("section", null, "explanation-block");
+      section.append(node("h3", match[1]), node("p", match[2])); host.append(section);
+    } else host.append(node("p", line));
+  });
+}
+function renderReport(result, decisions) {
+  $("result-base").textContent = format(result.base_score);
+  $("result-score").textContent = format(result.score);
+  const delta = result.score_delta;
+  $("result-change").hidden = !finite(delta);
+  $("result-change").textContent = `${delta >= 0 ? "+" : ""}${format(delta)} к базе`;
+  $("result-change").classList.toggle("is-negative", delta < 0);
+  $("result-cost").textContent = `${format(result.cost, 0)} / ${format(budget(), 0)}`;
+  $("result-remaining").textContent = `${format(result.remaining_budget, 0)} ед.`;
+  $("result-critical").textContent = format(result.critical_count, 0);
+  $("report-horizon").textContent = `ЧЕРЕЗ ${horizon()} КВАРТАЛОВ`;
+  const chart = $("district-chart"); chart.replaceChildren();
+  if (typeof window.renderDistrictCharts === "function") {
+    try { window.renderDistrictCharts(chart, result); }
+    catch (error) { console.error("District visualization unavailable", error); chart.replaceChildren(); }
+  }
+  const fallback = $("district-list"); fallback.replaceChildren();
+  fallback.hidden = chart.childElementCount > 0;
+  if (!chart.childElementCount) Object.entries(result.districts || {}).forEach(([name, values]) => {
+    const row = node("div", null, "district-result-row"); row.append(node("span", name), node("strong", format(values?.score))); fallback.append(row);
+  });
+  const synergies = $("synergies"); synergies.replaceChildren();
+  (result.applied_synergies || []).forEach((synergy) => {
+    if (!Array.isArray(synergy.measures) || !finite(synergy.bonus)) return;
+    synergies.append(node("p", `${synergy.measures.join(" + ")}: ${indicatorName(synergy.indicator)} +${format(synergy.bonus, 0)} · ${synergy.district}`));
+  });
+  displayExplanation(result.explanation);
+  const signed = $("signed-decisions"); signed.replaceChildren();
+  decisions.forEach((decision, index) => {
+    const measure = measureById(decision.measure_id);
+    const card = node("article", null, "signed-decision");
+    const number = node("span", `РАСПОРЯЖЕНИЕ 0${index + 1}`, "decision-number"); number.append(icon("check"));
+    card.append(number, node("strong", measure.name), node("small", `${decision.district || "Весь город"} · ${format(measure.cost, 0)} ед.`));
+    signed.append(card);
+  });
+}
+async function calculate() {
+  if (state.busy) return;
+  const errors = validate(state.decisions, true);
+  if (errors.length) { showPlanErrors(errors); return; }
+  const revision = state.revision;
+  const decisions = state.decisions.map((item) => ({ ...item }));
+  state.result = null; state.proposal = null; $("comparison").hidden = true;
+  syncNavigation(); notice(""); $("plan-errors").hidden = true;
+  setBusy("simulate"); announce("Проверяем распоряжения и готовим доклад.");
+  try {
+    const result = await requestJson(API.simulate, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions }) });
+    if (revision !== state.revision) return;
+    if (result?.valid !== true || !finite(result.score)) {
+      showPlanErrors(Array.isArray(result?.errors) && result.errors.length ? result.errors : ["Сервер не подтвердил результат. Попробуйте ещё раз."]); return;
+    }
+    state.result = result;
+    renderReport(result, decisions);
+    setStage("report"); announce(`Пять распоряжений подписаны. Итоговый Score ${format(result.score)}.`);
   } catch (error) {
-    $("comparison-error").textContent = `Не удалось сравнить планы: ${error.message}`;
-    $("comparison-error").hidden = false;
-  } finally { button.disabled = false; }
+    console.error("Simulation request failed", error);
+    if (revision === state.revision) showPlanErrors(["Не удалось получить расчёт. Ваш пакет сохранён — попробуйте подписать его ещё раз."]);
+  } finally { setBusy(null); }
 }
-
-function districtScore(result, name) { return Number(result.districts?.[name]?.score); }
-function districtScoreWithChange(result, name) {
-  const score = districtScore(result, name);
-  const baseline = Number(state.catalog?.districts?.[name]?.score);
-  return Number.isFinite(baseline) ? `${formatScore(score)} (${signed(score - baseline)})` : formatScore(score);
+function validateProposal(result) {
+  if (result?.valid !== true || !finite(result.score) || !finite(result.cost) || !Array.isArray(result.decisions) || result.decisions.length !== 5) throw new Error("Incomplete proposal");
+  const decisions = result.decisions.map((decision) => ({ measure_id: decision?.measure_id, district: decision?.district }));
+  if (validate(decisions, true).length) throw new Error("Invalid proposal");
+  return decisions;
 }
-function affectedDistricts(result) {
-  return districts().filter((name) => Object.values(result.deltas?.[name] || {}).some((value) => Number(value) !== 0));
-}
-function signed(value) { return `${value >= 0 ? "+" : ""}${formatScore(value)}`; }
-
-function renderComparison(current, proposed) {
-  $("comparison-panel").hidden = true;
-  const gap = Number(proposed.score) - Number(current.score);
-  $("comparison-gap").textContent = `${signed(gap)} к вашему Score`;
-  const summary = $("comparison-summary");
-  summary.replaceChildren();
+function signed(value) { return finite(value) ? `${value >= 0 ? "+" : ""}${format(value)}` : "—"; }
+function renderComparison(current, proposed, decisions) {
+  const host = $("comparison");
+  host.hidden = !current;
+  $("suggestion-dialog").classList.toggle("has-comparison", Boolean(current));
+  if (!current) return;
+  $("comparison-gap").textContent = `${signed(proposed.score - current.score)} к вашему Score`;
+  const summary = $("comparison-summary"); summary.replaceChildren();
   for (const [label, result] of [["Ваш план", current], ["Рекомендация", proposed]]) {
-    const card = text("div", "", "comparison-stat");
-    card.append(text("small", label), text("strong", formatScore(result.score)), text("span", `Стоимость ${result.cost} / 100 · затронуто районов: ${affectedDistricts(result).length}`));
+    const affected = districtNames().filter((name) => Object.values(result.deltas?.[name] || {}).some((delta) => finite(delta) && delta !== 0)).length;
+    const card = node("div", null, "comparison-stat");
+    card.append(node("small", label), node("strong", format(result.score)), node("span", `Стоимость ${format(result.cost, 0)} / ${format(budget(), 0)} · затронуто районов: ${affected}`));
     summary.append(card);
   }
-  const rows = $("comparison-districts");
-  rows.replaceChildren();
-  const userBetter = [];
-  const proposedBetter = [];
-  districts().forEach((name) => {
-    const first = districtScore(current, name);
-    const second = districtScore(proposed, name);
-    if (!Number.isFinite(first) || !Number.isFinite(second)) return;
-    const difference = second - first;
-    if (difference > 0.00001) proposedBetter.push(name);
-    if (difference < -0.00001) userBetter.push(name);
-    const row = document.createElement("tr");
-    row.append(text("th", name), text("td", districtScoreWithChange(current, name)), text("td", districtScoreWithChange(proposed, name)));
-    const delta = text("td", signed(difference), difference < 0 ? "comparison-negative" : "comparison-positive");
-    row.append(delta);
+  const rows = $("comparison-districts"); rows.replaceChildren();
+  const userBetter = [], proposedBetter = [];
+  districtNames().forEach((name) => {
+    const first = current.districts?.[name]?.score;
+    const second = proposed.districts?.[name]?.score;
+    const baseline = state.catalog.districts[name]?.score;
+    const difference = finite(first) && finite(second) ? second - first : null;
+    if (finite(difference) && difference > 0.00001) proposedBetter.push(name);
+    if (finite(difference) && difference < -0.00001) userBetter.push(name);
+    const scoreWithChange = (score) => finite(score) && finite(baseline) ? `${format(score)} (${signed(score - baseline)})` : format(score);
+    const row = node("tr");
+    const heading = node("th", name); heading.scope = "row";
+    row.append(heading, node("td", scoreWithChange(first)), node("td", scoreWithChange(second)), node("td", signed(difference), finite(difference) && difference < 0 ? "comparison-negative" : "comparison-positive"));
     rows.append(row);
   });
-  const tradeoffs = $("comparison-tradeoffs");
-  tradeoffs.replaceChildren();
-  const costDifference = Number(proposed.cost) - Number(current.cost);
-  const costMessage = costDifference === 0 ? "Оба плана тратят одинаковый бюджет." : `Рекомендация тратит на ${Math.abs(costDifference)} ед. ${costDifference > 0 ? "больше" : "меньше"}.`;
-  tradeoffs.append(text("p", costMessage));
-  tradeoffs.append(text("p", proposedBetter.length ? `Выше районный балл: ${proposedBetter.join(", ")}.` : "Нет районов, где рекомендация повышает районный балл относительно вашего плана."));
-  tradeoffs.append(text("p", userBetter.length ? `Ваш план сохраняет более высокий районный балл: ${userBetter.join(", ")}.` : "Нет районов, где ваш план даёт более высокий районный балл."));
-  if (Number.isFinite(Number(current.critical_count)) && Number.isFinite(Number(proposed.critical_count))) {
-    tradeoffs.append(text("p", `Критических показателей: ваш план — ${current.critical_count}, рекомендация — ${proposed.critical_count}.`));
+  const tradeoffs = $("comparison-tradeoffs"); tradeoffs.replaceChildren();
+  if (finite(current.cost) && finite(proposed.cost)) {
+    const costDifference = proposed.cost - current.cost;
+    tradeoffs.append(node("p", costDifference === 0 ? "Оба плана тратят одинаковый бюджет." : `Рекомендация тратит на ${format(Math.abs(costDifference), 0)} ед. ${costDifference > 0 ? "больше" : "меньше"}.`));
   }
-  const userMeasures = state.decisions.map(({ measure_id, district }) => `${measure_id}${district ? ` / ${district}` : " / город"}`).join(" · ");
-  const proposedMeasures = proposed.decisions.map(({ measure_id, district }) => `${measure_id}${district ? ` / ${district}` : " / город"}`).join(" · ");
-  $("comparison-measures").textContent = `Ваш план: ${userMeasures}. Рекомендация: ${proposedMeasures}.`;
-  $("comparison").hidden = false;
-  $("comparison").scrollIntoView({ behavior: "smooth", block: "start" });
+  tradeoffs.append(node("p", proposedBetter.length ? `Выше районный балл: ${proposedBetter.join(", ")}.` : "Нет районов, где рекомендация повышает районный балл относительно вашего плана."));
+  tradeoffs.append(node("p", userBetter.length ? `Ваш план сохраняет более высокий районный балл: ${userBetter.join(", ")}.` : "Нет районов, где ваш план даёт более высокий районный балл."));
+  if (finite(current.critical_count) && finite(proposed.critical_count)) tradeoffs.append(node("p", `Показателей ниже 40: ваш план — ${format(current.critical_count, 0)}, рекомендация — ${format(proposed.critical_count, 0)}.`));
+  const describe = (items) => items.map(({ measure_id, district }) => `${measure_id} / ${district || "город"}`).join(" · ");
+  $("comparison-measures").textContent = `Ваш план: ${describe(state.decisions)}. Рекомендация: ${describe(decisions)}.`;
 }
-
-async function calculate() {
-  const button = $("submit-plan");
-  const revision = state.revision;
-  button.disabled = true;
-  $("suggest-plan").disabled = true;
-  optimizerError("");
-  button.firstElementChild.textContent = "Считаем последствия…";
-  try {
-    const decisions = state.decisions.filter((item) => item.measure_id).map((item) => ({ measure_id: item.measure_id, district: item.district }));
-    const response = await fetch(API.simulate, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions }) });
-    const result = await response.json();
-    if (!response.ok && !Array.isArray(result.errors)) throw new Error(`Сервер вернул HTTP ${response.status}`);
-    if (revision !== state.revision) return;
-    showResult(result);
-    state.currentResult = result.valid && Number.isFinite(Number(result.score)) ? result : null;
-  } catch (error) { showErrors([`Не удалось связаться с сервером: ${error.message}`]); }
-  finally { button.disabled = false; $("suggest-plan").disabled = false; button.firstElementChild.textContent = "Рассчитать сценарий"; }
+function showSuggestion(result, decisions, explanation = null, removed = [], added = [], improved = true) {
+  state.proposal = { result, decisions };
+  renderComparison(state.result, result, decisions);
+  const summary = $("suggestion-summary"); summary.replaceChildren();
+  const score = node("div", "Score по модели"); score.prepend(node("strong", format(result.score)));
+  const cost = node("div", "единиц бюджета"); cost.prepend(node("strong", format(result.cost, 0))); summary.append(score, cost);
+  const host = $("suggestion-decisions"); host.replaceChildren();
+  decisions.forEach((decision, index) => {
+    const measure = measureById(decision.measure_id);
+    const row = node("div", null, "suggestion-decision");
+    const copy = node("div"); copy.append(node("strong", `${measure.id} · ${measure.name}`), node("small", `${decision.district || "Весь город"} · ${format(measure.cost, 0)} ед.`));
+    row.append(node("span", String(index + 1).padStart(2, "0"), "decision-number"), copy); host.append(row);
+  });
+  $("suggestion-summary").hidden = Boolean(state.result);
+  const ai = $("suggestion-ai");
+  ai.hidden = !explanation;
+  if (explanation) {
+    const label = (item) => `${item.measure_id}/${item.district || "город"}`;
+    $("suggestion-swap").textContent = improved
+      ? `${removed.map(label).join(", ")} → ${added.map(label).join(", ")}`
+      : "Улучшение заменой одного распоряжения не найдено";
+    $("suggestion-ai-text").textContent = explanation.text || "Совет недоступен.";
+    $("suggestion-ai-source").textContent = explanation.source === "model"
+      ? `AI-разбор проверенных расчётов · ${explanation.provider || "модель"}`
+      : "Разбор по рассчитанным фактам. AI-модель недоступна.";
+  }
+  $("apply-suggestion").hidden = !improved;
+  $("suggestion-dialog").showModal();
 }
-
 async function suggestPlan() {
-  if (!state.currentResult?.valid) {
-    optimizerError("Сначала рассчитайте корректный ручной план, чтобы сравнить его с рекомендацией.");
-    return;
-  }
-  const button = $("suggest-plan");
+  if (state.busy) return;
+  notice(""); state.proposal = null; setBusy("optimize"); announce("Советник ищет рассчитанный план. Ваш пакет остаётся у вас.");
+  try {
+    const result = await requestJson(API.optimize);
+    const decisions = validateProposal(result);
+    $("suggestion-title").textContent = "Глобальный оптимум заданной модели.";
+    $("suggestion-description").textContent = "Лучший допустимый план среди всех комбинаций пяти мер по формуле задачи. Сравните районы перед выбором.";
+    showSuggestion(result, decisions);
+  } catch (error) {
+    console.error("Proposal request failed", error);
+    if (state.stage === "report") setStage("planner");
+    notice("Советник сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
+  } finally { setBusy(null); }
+}
+async function recommendChange() {
+  if (state.busy || !state.result) return;
   const revision = state.revision;
-  button.disabled = true;
-  $("submit-plan").disabled = true;
-  button.firstElementChild.textContent = "Ищем план…";
-  optimizerError("");
+  const decisions = state.decisions.map((item) => ({ ...item }));
+  setBusy("recommend"); announce("Советник ищет лучшую замену одного распоряжения.");
   try {
-    const response = await fetch(API.optimize);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const result = await response.json();
-    if (!result?.valid || !Number.isFinite(Number(result.score)) || !Array.isArray(result.decisions) || result.decisions.length !== 5) {
-      throw new Error(Array.isArray(result?.errors) && result.errors.length ? result.errors.join(" ") : "сервер вернул неполный план");
-    }
-    const ids = new Set();
-    const proposed = result.decisions.map((decision) => {
-      const measure = selectedMeasure(decision?.measure_id);
-      if (!measure || ids.has(measure.id)) throw new Error("сервер вернул неизвестные или повторяющиеся мероприятия");
-      ids.add(measure.id);
-      const district = isCity(measure) ? null : decision.district;
-      if (!isCity(measure) && !districts().includes(district)) throw new Error("сервер не указал район для одной из мер");
-      return { measure_id: measure.id, district };
+    const answer = await requestJson(API.recommendChange, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions })
     });
-    if (revision !== state.revision || !state.currentResult?.valid) throw new Error("ручной план изменился во время поиска");
-    state.recommendation = { ...result, decisions: proposed };
-    renderComparison(state.currentResult, state.recommendation);
+    if (revision !== state.revision || !state.result) return;
+    if (answer?.valid !== true || !finite(answer.proposed?.score) || !finite(answer.current?.score)
+        || Math.abs(answer.current.score - state.result.score) > 1e-8) throw new Error("Incomplete comparison");
+    const proposed = { ...answer.proposed, decisions: answer.decisions };
+    const next = validateProposal(proposed);
+    $("suggestion-title").textContent = "Одна замена. Проверенный результат.";
+    $("suggestion-description").textContent = "Советник сохранил четыре ваших решения и проверил лучшую допустимую замену симулятором.";
+    showSuggestion(proposed, next, answer.explanation, answer.removed || [], answer.added || [], answer.score_delta > 0);
   } catch (error) {
-    optimizerError(`Не удалось сравнить планы: ${error.message}. Ваш ручной выбор сохранён.`);
-  } finally {
-    button.disabled = false;
-    $("submit-plan").disabled = false;
-    button.firstElementChild.textContent = "Сравнить с рекомендацией";
-  }
+    console.error("One-change recommendation failed", error);
+    announce("Совет по одной замене сейчас недоступен. Ваш план сохранён.");
+    notice("Совет по одной замене сейчас недоступен. Ваш план сохранён.", true);
+  } finally { setBusy(null); }
 }
-
-function adoptPlan() {
-  if (!state.recommendation?.valid) return;
-  const result = state.recommendation;
-  state.decisions = result.decisions.map(({ measure_id, district }) => ({ measure_id, district }));
-  state.currentResult = result;
-  state.recommendation = null;
-  state.revision += 1;
-  renderSlots();
-  updateBudget();
-  optimizerError("");
-  showResult(result);
+function applySuggestion() {
+  if (!state.proposal || state.busy) return;
+  const decisions = state.proposal.decisions;
+  $("suggestion-dialog").close();
+  setDecisions(decisions, "План советника перенесён в пакет. Его можно изменить перед подписанием.");
+  setStage("planner");
+  notice("План советника в вашем пакете. Проверьте пять распоряжений и подпишите, когда будете готовы.");
 }
-
 async function start() {
+  $("loading").hidden = false; $("load-error").hidden = true;
   try {
-    const response = await fetch(API.catalog);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const catalog = await response.json();
-    if (!catalog || !catalog.districts || !catalog.measures || !Number.isFinite(Number(catalog.base_score))) throw new Error("Неполный каталог");
+    const catalog = await requestJson(API.catalog);
+    if (!catalog || !finite(catalog.base_score) || !catalog.districts || typeof catalog.districts !== "object" || !Object.keys(catalog.districts).length || !catalog.measures || typeof catalog.measures !== "object") throw new Error("Incomplete catalogue");
+    const measures = Object.entries(catalog.measures).map(([id, measure]) => ({ ...measure, id }));
+    if (!measures.length || measures.some((item) => typeof item.name !== "string" || typeof item.category !== "string" || !finite(item.cost) || !["city", "district"].includes(item.scope))) throw new Error("Invalid measures");
     state.catalog = catalog;
-    $("base-score").textContent = formatScore(catalog.base_score);
-    renderSlots();
-    renderCatalog();
-    updateBudget();
-    $("loading").hidden = true;
+    state.measures = measures.sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+    renderBriefing(); renderPlanner(); syncNavigation();
     $("app").hidden = false;
-    $("submit-plan").addEventListener("click", calculate);
-    $("suggest-plan").addEventListener("click", suggestPlan);
-    $("recommend-change").addEventListener("click", recommendChange);
-    $("adopt-plan").addEventListener("click", adoptPlan);
   } catch (error) {
-    $("loading").hidden = true;
-    $("app-error").textContent = `Не удалось загрузить исходные данные: ${error.message}. Обновите страницу после запуска сервера.`;
-    $("app-error").hidden = false;
-  }
+    console.error("Catalogue request failed", error);
+    $("load-error-text").textContent = "Исходные данные города недоступны. Проверьте, что приложение запущено, и повторите попытку.";
+    $("load-error").hidden = false;
+  } finally { $("loading").hidden = true; }
 }
 
+document.querySelectorAll("[data-stage]").forEach((button) => button.addEventListener("click", () => setStage(button.dataset.stage)));
+$("start-shift").addEventListener("click", () => setStage("planner"));
+$("retry-catalog").addEventListener("click", start);
+$("confirm-measure").addEventListener("click", confirmMeasure);
+$("submit-plan").addEventListener("click", calculate);
+$("suggest-plan").addEventListener("click", suggestPlan);
+$("compare-plan").addEventListener("click", () => { if (state.result) suggestPlan(); });
+$("recommend-change").addEventListener("click", recommendChange);
+$("mobile-plan-jump").addEventListener("click", () => {
+  const title = $("portfolio-title");
+  title.setAttribute("tabindex", "-1");
+  title.focus({ preventScroll: true });
+  title.scrollIntoView({ block: "start" });
+});
+$("apply-suggestion").addEventListener("click", applySuggestion);
+$("keep-my-plan").addEventListener("click", () => $("suggestion-dialog").close());
+document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
+  const rect = dialog.getBoundingClientRect();
+  if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
+}));
+$("measure-dialog").addEventListener("close", () => { state.pending = null; });
 start();
