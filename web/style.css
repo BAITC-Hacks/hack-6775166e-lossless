@@ -905,6 +905,7 @@ dialog::backdrop{background:#1d3b3170}
 .advisor-option strong{color:var(--ink)}
 .advisor-option-picked{background:var(--lime);border-color:var(--green);color:var(--green)}
 .advisor-option-score{color:var(--green)}
+.advisor-model-status{padding:10px 12px;border-left:3px solid var(--orange);background:#f6f1e7;color:var(--ink)}
 @media(max-width:620px){
   .measure-dialog{scroll-padding-bottom:88px}
   .measure-dialog .dialog-sticky-action{position:sticky;bottom:0;z-index:2;margin:14px -21px -21px;padding:12px 21px max(16px,env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line);box-shadow:0 -7px 16px #294d4017}

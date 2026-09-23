@@ -959,11 +959,39 @@ function clearAdvisorResponse() {
   $("advisor-response").hidden = true;
   $("advisor-error").hidden = true;
   $("advisor-response-text").textContent = "";
+  $("advisor-model-status").textContent = "";
+  $("advisor-model-status").hidden = true;
   $("advisor-options").replaceChildren();
+}
+function advisorFallbackStatus(advice) {
+  if (advice.reason === "model_not_configured") return "AI-модель на этом сервере не настроена и не вызывалась. Чтобы проверить LLM, задайте ключ и модель в .env или переменных окружения, затем перезапустите сервер. Три варианта ниже рассчитаны симулятором.";
+  const causes = {
+    authentication: "Сервер не прошёл авторизацию у провайдера AI. Проверьте настройки доступа.",
+    rate_limited: "Провайдер AI ограничил число запросов. Повторите позже.",
+    timeout: "Провайдер AI не ответил вовремя. Повторите попытку.",
+    invalid_model_output: "Ответ AI-модели не прошёл проверку фактов.",
+    provider_error: "Провайдер AI вернул ошибку. Повторите попытку позже.",
+    network_error: "Сервер не смог связаться с провайдером AI. Проверьте соединение сервера."
+  };
+  const cause = Object.prototype.hasOwnProperty.call(causes, advice.error_code)
+    ? causes[advice.error_code] : "AI-модель не ответила или её ответ не прошёл проверку.";
+  return `${cause} Показан разбор по расчётным фактам; три варианта доступны ниже.`;
+}
+function advisorRequestErrorMessage(error) {
+  if (error?.name === "AbortError") return "Истекло время ожидания ответа (75 секунд). Повторите запрос; план и расчёт сохранены.";
+  const status = /^HTTP (\d{3})$/.exec(error?.message || "")?.[1];
+  if (status === "400") return "Сервер отклонил запрос (HTTP 400). Проверьте, что план рассчитан и вопрос не длиннее 500 символов.";
+  if (status === "429") return "Сервер ограничил число запросов (HTTP 429). Повторите позже; план сохранён.";
+  if (status && Number(status) >= 500) return `Локальный сервер не смог завершить разбор (HTTP ${status}). План и расчёт сохранены.`;
+  if (status) return `Сервер отклонил запрос (HTTP ${status}). План и расчёт сохранены.`;
+  if (error instanceof SyntaxError) return "Сервер вернул некорректный ответ. План и расчёт сохранены.";
+  if (error instanceof TypeError) return "Нет соединения с локальным сервером. Проверьте, что он запущен, и повторите запрос.";
+  return "Не удалось получить ответ сервера. План и расчёт сохранены; повторите запрос.";
 }
 function renderAdvisorAnswer(answer) {
   const advice = answer?.advice;
   if (answer?.valid !== true || typeof advice?.text !== "string" || !advice.text.trim()
+      || !["model", "computed_facts"].includes(advice.source)
       || !Array.isArray(answer.options) || answer.options.length !== 3) throw new Error("Incomplete decision support");
   const byId = new Map();
   for (const option of answer.options) {
@@ -976,7 +1004,11 @@ function renderAdvisorAnswer(answer) {
   $("advisor-response-text").textContent = advice.text.trim();
   $("advisor-response-source").textContent = advice.source === "model"
     ? `AI-разбор проверенных расчётов${advice.model ? ` · ${advice.model}` : ""}`
-    : "Разбор по рассчитанным фактам · AI-модель недоступна";
+    : advice.reason === "model_not_configured" ? "Расчётные факты · AI-модель не настроена"
+      : "Расчётные факты · AI-модель недоступна";
+  const status = $("advisor-model-status");
+  status.textContent = advice.source === "computed_facts" ? advisorFallbackStatus(advice) : "";
+  status.hidden = !status.textContent;
   const host = $("advisor-options"); host.replaceChildren();
   for (const id of ["current", "one_change", "optimum"]) {
     const option = byId.get(id);
@@ -1017,19 +1049,23 @@ async function askAdvisor(event) {
   $("ask-advisor").disabled = true;
   $("ask-advisor").textContent = "Советник разбирает варианты…";
   announce("Советник сопоставляет ваш приоритет с рассчитанными вариантами.");
+  let waitingForServer = true;
   try {
     const answer = await requestJson(API.advice, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions, question })
     });
+    waitingForServer = false;
     if (revision !== state.revision || !state.result || score !== state.result.score) return;
     renderAdvisorAnswer(answer);
     announce("Разбор вашего приоритета готов. Показаны три рассчитанных варианта.");
   } catch (error) {
     console.error("Decision support unavailable", error);
     if (revision === state.revision) {
-      $("advisor-error").textContent = "Не удалось разобрать приоритет. Ваш план и результаты расчёта сохранены; попробуйте ещё раз.";
+      $("advisor-error").textContent = waitingForServer
+        ? advisorRequestErrorMessage(error)
+        : "Сервер вернул неполный или некорректный набор вариантов. План и расчёт сохранены.";
       $("advisor-error").hidden = false;
-      announce("Советник сейчас недоступен. Ваш план сохранён.");
+      announce($("advisor-error").textContent);
     }
   } finally {
     state.adviceBusy = false;
