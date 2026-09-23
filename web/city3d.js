@@ -70,7 +70,7 @@
   }
 
   function drawInitiativeModel(ctx, project, polygon, line, item, progress, mode) {
-    const x = item.x, z = item.z, base = item.city ? 0.23 : 0.19 * progress;
+    const x = item.x, z = item.z, base = item.city ? 0.66 : 0.19 * progress;
     const s = item.city ? 0.75 : 0.78;
     const after = mode === "result" && !item.preview;
     const edge = item.preview ? COLOR.orange : COLOR.green;
@@ -456,16 +456,18 @@
       if (items.some((item) => item.city)) {
         const cityColor = data.mode === "result" ? "rgba(41,77,64,.25)" : "rgba(41,77,64,.14)";
         const rail = [[-3.02, 1.88], [2.48, 1.88], [2.48, 2.42], [-3.02, 2.42]];
-        const top = rail.map(([x, z]) => project(x, .2, z));
-        const lower = rail.map(([x, z]) => project(x, -.08, z));
+        const top = rail.map(([x, z]) => project(x, .63, z));
+        const lower = rail.map(([x, z]) => project(x, .42, z));
         for (let index = 0; index < rail.length; index++) {
           const next = (index + 1) % rail.length;
           polygon([top[index], top[next], lower[next], lower[index]], "rgba(41,77,64,.34)", "rgba(41,77,64,.45)", 1);
         }
         polygon(top, "rgba(220,230,180,.82)", COLOR.green, 1.4);
+        [rail[0], rail[1], rail[2], rail[3]].forEach(([x, z]) =>
+          line(project(x, .42, z), project(x, -.08, z), "rgba(41,77,64,.38)", 1.4));
         SHAPES.forEach((shape) => {
           const center = project(shape.label[0], .2, shape.label[1]);
-          line(project(0, .21, 2.12), center, cityColor, 1.2);
+          line(project(0, .64, 2.12), center, cityColor, 1.2);
         });
       }
       items.sort((a, b) => project(a.x, 0, a.z).depth - project(b.x, 0, b.z).depth)
