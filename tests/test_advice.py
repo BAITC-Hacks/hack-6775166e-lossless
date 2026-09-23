@@ -132,11 +132,32 @@ class HumanAdviceContractTest(unittest.TestCase):
         self.assertEqual(schema["required"], ["selected_option", "fact_ids"])
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(schema["properties"]["selected_option"]["enum"],
-                         ["current", "one_change", "optimum", "none"])
+                         ["current", "none"])
+        self.assertEqual(json.loads(sent["input"])["allowed_options"],
+                         ["current", "none"])
         fact_ids = schema["properties"]["fact_ids"]
         self.assertEqual(fact_ids["items"]["enum"],
                          sorted(json.loads(sent["input"])["candidates"]))
         self.assertEqual((fact_ids["minItems"], fact_ids["maxItems"]), (2, 5))
+
+    def test_explicit_district_constraint_filters_strict_schema_before_model_call(self):
+        response = {"output": [{"type": "message", "content": [{"type": "output_text",
+                     "text": json.dumps({"selected_option": "current",
+                                         "fact_ids": ["current_district_2",
+                                                      "one_change_district_2"]})}]}]}
+        env = {**NO_MODEL, "OPENAI_API_KEY": "unit-test-key",
+               "OPENAI_MODEL": "unit-test-model"}
+        question = "Помочь Нуре, не ухудшив Сарыарку"
+        with patch.dict(os.environ, env), \
+                patch("explanation._post_json", return_value=response) as mock_post:
+            answer = _advice_scenario(EXAMPLE, simulate(EXAMPLE), question)
+        self.assertEqual(answer["advice"]["source"], "model")
+        self.assertEqual(answer["advice"]["selected_option"], "current")
+        sent = mock_post.call_args.args[1]
+        allowed = json.loads(sent["input"])["allowed_options"]
+        schema_options = sent["text"]["format"]["schema"]["properties"]["selected_option"]["enum"]
+        self.assertEqual(allowed, ["current", "none"])
+        self.assertEqual(schema_options, allowed)
 
     def test_advisor_reads_openai_configuration_from_env_file(self):
         response = {"output": [{"type": "message", "content": [{"type": "output_text",

@@ -731,10 +731,11 @@ class ExplanationTests(unittest.TestCase):
                  '{"selected_option":"none","selected_option":"current",'
                  '"fact_ids":["current_overview","one_change_overview"]}',
                  json.dumps({"selected_option": "none", "fact_ids": [{}, "current_overview"]}),
+                 json.dumps({"selected_option": "one_change", "fact_ids": ["current_overview", "one_change_overview"]}),
                  json.dumps({"selected_option": "current", "fact_ids": ["unknown", "current_overview"]})]
         for output in cases:
             with self.subTest(output=output), self.assertRaises(ValueError):
-                explanation._validate_advice_selection(output, facts)
+                explanation._validate_advice_selection(output, facts, ["current", "none"])
 
     def test_advisor_gpt56_sol_has_bounded_dynamic_selection(self):
         facts = {"current_overview": "fact", "one_change_overview": "fact"}
@@ -742,7 +743,7 @@ class ExplanationTests(unittest.TestCase):
         with patch("src.explanation.request.urlopen", return_value=FakeResponse(
                 self.openai_response(json.dumps(selected)))) as transport:
             answer = explanation._advisor_model_selection(
-                "Какая разница?", facts, "test-key", "gpt-5.6-sol", "openai")
+                "Какая разница?", facts, ["current", "none"], "test-key", "gpt-5.6-sol", "openai")
         self.assertEqual(answer, ("none", list(facts)))
         payload = json.loads(transport.call_args.args[0].data)
         self.assertEqual(payload["max_output_tokens"], 512)
@@ -751,6 +752,8 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(transport.call_args.kwargs["timeout"], 20)
         schema = payload["text"]["format"]["schema"]
         self.assertEqual(schema["properties"]["fact_ids"]["items"]["enum"], sorted(facts))
+        self.assertEqual(schema["properties"]["selected_option"]["enum"], ["current", "none"])
+        self.assertEqual(json.loads(payload["input"])["allowed_options"], ["current", "none"])
 
 if __name__ == "__main__":
     unittest.main()
