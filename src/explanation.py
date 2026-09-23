@@ -9,7 +9,8 @@ import os
 from urllib import request
 
 
-_API_URL = "https://api.openai.com/v1/responses"
+_OPENAI_API_URL = "https://api.openai.com/v1/responses"
+_NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 _INSTRUCTIONS = (
     "Ты объясняешь результат городской симуляции. Верни только JSON-объект "
     "с ключами strengths, risks, tradeoffs. Значение каждого ключа — массив из "
@@ -94,27 +95,7 @@ def _fallback(facts):
     return {section: list(items)[:2] for section, items in facts.items()}
 
 
-def _select_with_model(facts, api_key, model):
-    payload = {
-        "model": model,
-        "instructions": _INSTRUCTIONS,
-        "input": json.dumps({"candidates": facts}, ensure_ascii=False, sort_keys=True),
-        "store": False,
-    }
-    req = request.Request(
-        _API_URL,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with request.urlopen(req, timeout=8) as response:
-        body = json.load(response)
-    # Responses may have multiple output items; collect all output_text blocks.
-    output = "".join(
-        block.get("text", "")
-        for item in body.get("output", []) if item.get("type") == "message"
-        for block in item.get("content", []) if block.get("type") == "output_text"
-    )
+def _validate_selection(output, facts):
     selected = json.loads(output)
     if not isinstance(selected, dict) or set(selected) != set(facts):
         raise ValueError("Unexpected model selection shape")
@@ -126,21 +107,77 @@ def _select_with_model(facts, api_key, model):
     return selected
 
 
+def _post_json(url, payload, api_key):
+    if not url.startswith("https://"):
+        raise ValueError("Model API URL must use HTTPS")
+    req = request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with request.urlopen(req, timeout=8) as response:
+        return json.load(response)
+
+
+def _select_with_openai(facts, api_key, model):
+    payload = {
+        "model": model,
+        "instructions": _INSTRUCTIONS,
+        "input": json.dumps({"candidates": facts}, ensure_ascii=False, sort_keys=True),
+        "store": False,
+    }
+    body = _post_json(_OPENAI_API_URL, payload, api_key)
+    # Responses may have multiple output items; collect all output_text blocks.
+    output = "".join(
+        block.get("text", "")
+        for item in body.get("output", []) if item.get("type") == "message"
+        for block in item.get("content", []) if block.get("type") == "output_text"
+    )
+    return _validate_selection(output, facts)
+
+
+def _select_with_nvidia(facts, api_key, model):
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _INSTRUCTIONS},
+            {"role": "user", "content": json.dumps({"candidates": facts}, ensure_ascii=False, sort_keys=True)},
+        ],
+        "stream": False,
+    }
+    url = os.getenv("NVIDIA_API_URL") or _NVIDIA_API_URL
+    body = _post_json(url, payload, api_key)
+    output = body["choices"][0]["message"]["content"]
+    if not isinstance(output, str):
+        raise ValueError("Model did not return text")
+    return _validate_selection(output, facts)
+
+
 def explain(result):
     """Return a grounded explanation, with a transparent offline fallback.
 
-    A model is used only when both OPENAI_API_KEY and OPENAI_MODEL are set.
+    NVIDIA_API_KEY + NVIDIA_MODEL take priority over OpenAI configuration.
+    Models are never guessed: both key and explicit model ID are required.
     Invalid simulations do not have scores and are never explained.
     """
     if not result.get("valid"):
         return {"text": "", "source": "computed_facts", "reason": "invalid_result"}
     facts = _facts(result)
-    api_key, model = os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_MODEL")
+    nvidia_key, nvidia_model = os.getenv("NVIDIA_API_KEY"), os.getenv("NVIDIA_MODEL")
+    openai_key, openai_model = os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_MODEL")
+    if nvidia_key and nvidia_model:
+        api_key, model, provider, selector = nvidia_key, nvidia_model, "nvidia", _select_with_nvidia
+    elif openai_key and openai_model:
+        api_key, model, provider, selector = openai_key, openai_model, "openai", _select_with_openai
+    else:
+        api_key = model = provider = selector = None
     if api_key and model:
         try:
-            selected = _select_with_model(facts, api_key, model)
-            return {"text": _render(facts, selected), "source": "model", "model": model}
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            selected = selector(facts, api_key, model)
+            return {"text": _render(facts, selected), "source": "model",
+                    "provider": provider, "model": model}
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
             pass
     return {
         "text": _render(facts, _fallback(facts)),

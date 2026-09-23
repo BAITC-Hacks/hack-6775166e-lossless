@@ -68,6 +68,43 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(answer["source"], "computed_facts")
         self.assertNotIn("999", answer["text"])
 
+    def test_nvidia_has_priority_and_selects_only_verified_facts(self):
+        chosen = {"strengths": ["strength_synergy"], "risks": ["risk_weakest"],
+                  "tradeoffs": ["tradeoff_lag"]}
+        response = {"choices": [{"message": {"content": json.dumps(chosen)}}]}
+        env = {"NVIDIA_API_KEY": "test-nvidia-key", "NVIDIA_MODEL": "explicit/model-id",
+               "OPENAI_API_KEY": "test-openai-key", "OPENAI_MODEL": "other-model"}
+        with patch.dict(os.environ, env), \
+                patch("src.explanation.request.urlopen", return_value=FakeResponse(response)) as mock_open:
+            answer = explain(RESULT)
+        self.assertEqual(answer["source"], "model")
+        self.assertEqual(answer["provider"], "nvidia")
+        self.assertIn("M10, M12", answer["text"])
+        self.assertNotIn("56,54", answer["text"])
+        req = mock_open.call_args.args[0]
+        sent = json.loads(req.data)
+        self.assertEqual(req.full_url, "https://integrate.api.nvidia.com/v1/chat/completions")
+        self.assertEqual(sent["model"], "explicit/model-id")
+        self.assertEqual(sent["messages"][0]["role"], "system")
+        self.assertEqual(mock_open.call_args.kwargs["timeout"], 8)
+
+    def test_nvidia_timeout_falls_back_without_exposing_key(self):
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "secret-key", "NVIDIA_MODEL": "model-id",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}), \
+                patch("src.explanation.request.urlopen", side_effect=TimeoutError("slow")):
+            answer = explain(RESULT)
+        self.assertEqual(answer["source"], "computed_facts")
+        self.assertEqual(answer["reason"], "model_unavailable")
+        self.assertNotIn("secret-key", str(answer))
+
+    def test_nvidia_key_without_model_never_calls_api(self):
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "secret-key", "NVIDIA_MODEL": "",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}), \
+                patch("src.explanation.request.urlopen") as mock_open:
+            answer = explain(RESULT)
+        self.assertEqual(answer["reason"], "model_not_configured")
+        mock_open.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
