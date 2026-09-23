@@ -41,9 +41,13 @@ function icon(name) {
 function announce(message) { $("announcer").textContent = message; }
 function indicatorName(key) { return state.catalog.indicators?.[key]?.name || key; }
 function notice(message = "", error = false) {
-  $("planner-notice").textContent = message;
-  $("planner-notice").hidden = !message;
-  $("planner-notice").classList.toggle("is-error", error);
+  const active = state.stage === "report" ? "report-notice" : "planner-notice";
+  ["planner-notice", "report-notice"].forEach((id) => {
+    const host = $(id);
+    host.textContent = id === active ? message : "";
+    host.hidden = !host.textContent;
+    host.classList.toggle("is-error", id === active && error && Boolean(message));
+  });
 }
 function syncNavigation() {
   document.querySelectorAll("button[data-stage]").forEach((button) => {
@@ -59,6 +63,7 @@ function syncNavigation() {
 function setStage(stage) {
   if (!state.catalog || !["briefing", "planner", "report"].includes(stage) || stage === "report" && !state.result) return false;
   if (stage === state.stage) return true;
+  notice("");
   state.stage = stage;
   $("app").dataset.stage = stage;
   ["briefing", "planner", "report"].forEach((name) => { $(`stage-${name}`).hidden = name !== stage; });
@@ -745,20 +750,23 @@ function showPlanErrors(errors) {
   announce("Расчёт не выполнен. Проверьте причины рядом с планом.");
   host.scrollIntoView({ behavior: "smooth", block: "center" });
 }
+function explanationText(explanation) {
+  const content = typeof explanation === "string" ? explanation : explanation?.text;
+  if (typeof content !== "string") return "";
+  // Localize labels and punctuation, keeping all calculated values unchanged.
+  return ["computed_facts", "model"].includes(explanation?.source)
+    ? content.replace(/\b[A-Z][0-9]\b/g, (key) => state.catalog?.indicators?.[key]?.name || key)
+      .replace(/(\d)\.(\d)/g, "$1,$2")
+    : content;
+}
 function displayExplanation(explanation) {
   const host = $("explanation"); host.replaceChildren();
   const source = $("explanation-source");
   if (explanation?.source === "model") source.textContent = `AI-разбор на основе рассчитанных фактов${explanation.provider === "nvidia" ? " · NVIDIA" : ""}`;
   else if (explanation?.source === "computed_facts") source.textContent = "AI-модель недоступна. Показан разбор по рассчитанным фактам.";
   else source.textContent = "Пояснение к результату сервера";
-  const content = typeof explanation === "string" ? explanation : explanation?.text;
-  if (typeof content !== "string" || !content.trim()) { host.append(node("p", "Пояснение сейчас недоступно. Результаты расчёта сохранены.")); return; }
-  // Explanations are assembled from server facts. Localize labels and decimal
-  // punctuation only; the simulator's values and Score are displayed unchanged.
-  const displayText = ["computed_facts", "model"].includes(explanation?.source)
-    ? content.replace(/\b[A-Z][0-9]\b/g, (key) => state.catalog?.indicators?.[key]?.name || key)
-      .replace(/(\d)\.(\d)/g, "$1,$2")
-    : content;
+  const displayText = explanationText(explanation);
+  if (!displayText.trim()) { host.append(node("p", "Пояснение сейчас недоступно. Результаты расчёта сохранены.")); return; }
   displayText.trim().split(/\n+/).filter(Boolean).forEach((line) => {
     const match = line.match(/^(Сильные стороны|Риски|Компромиссы):\s*(.*)$/);
     if (match) {
@@ -897,10 +905,11 @@ function showSuggestion(result, decisions, explanation = null, removed = [], add
   ai.hidden = !explanation;
   if (explanation) {
     const label = (item) => `${item.measure_id}/${item.district || "город"}`;
+    $("suggestion-swap").hidden = improved && !removed.length && !added.length;
     $("suggestion-swap").textContent = improved
       ? `${removed.map(label).join(", ")} → ${added.map(label).join(", ")}`
       : "Улучшение заменой одной меры не найдено";
-    $("suggestion-ai-text").textContent = explanation.text || "Совет недоступен.";
+    $("suggestion-ai-text").textContent = explanationText(explanation) || "Совет недоступен.";
     $("suggestion-ai-source").textContent = explanation.source === "model"
       ? `AI-разбор проверенных расчётов · ${explanation.provider || "модель"}`
       : "Разбор по рассчитанным фактам. AI-модель недоступна.";
@@ -916,10 +925,9 @@ async function suggestPlan() {
     const decisions = validateProposal(result);
     $("suggestion-title").textContent = "Оптимальный план по модели.";
     $("suggestion-description").textContent = "Лучший допустимый план среди всех комбинаций пяти мер по формуле задачи. Сравните районы перед выбором.";
-    showSuggestion(result, decisions);
+    showSuggestion(result, decisions, result.explanation);
   } catch (error) {
     console.error("Proposal request failed", error);
-    if (state.stage === "report") { setStage("planner"); scrollToSection($("planner-notice")); }
     notice("Подбор сейчас недоступен. Текущий план сохранён.", true);
   } finally { setBusy(null); }
 }
@@ -927,6 +935,7 @@ async function recommendChange() {
   if (state.busy || !state.result) return;
   const revision = state.revision;
   const decisions = state.decisions.map((item) => ({ ...item }));
+  notice("");
   setBusy("recommend"); announce("Проверяется замена одной меры.");
   try {
     const answer = await requestJson(API.recommendChange, {

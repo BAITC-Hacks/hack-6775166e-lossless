@@ -6,12 +6,16 @@ Every displayed fact is constructed from the deterministic simulator output.
 
 import json
 import os
+from http.client import HTTPException
 from pathlib import Path
 from urllib import request
+from urllib.error import HTTPError, URLError
 
 
 _OPENAI_API_URL = "https://api.openai.com/v1/responses"
 _NVIDIA_API_BASE_URL = "https://integrate.api.nvidia.com/v1"
+_OPENAI_TIMEOUT_SECONDS = 20
+_NVIDIA_TIMEOUT_SECONDS = 45
 _MODEL_ENV_KEYS = ("NVIDIA_API_KEY", "NVIDIA_MODEL", "OPENAI_API_KEY", "OPENAI_MODEL")
 _DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 _INSTRUCTIONS = (
@@ -23,10 +27,10 @@ _INSTRUCTIONS = (
 
 
 def _read_model_env_file():
-    """Read model settings from this checkout's .env without executing it."""
+    """Read this checkout's model settings as data, without shell evaluation."""
     try:
         lines = _DOTENV_PATH.read_text(encoding="utf-8-sig").splitlines()
-    except FileNotFoundError:
+    except (OSError, UnicodeError):
         return {}
     values = {}
     for line in lines:
@@ -41,9 +45,13 @@ def _read_model_env_file():
             continue
         value = value.strip()
         if value.startswith(("'", '"')):
-            quote = value[0]
-            if len(value) >= 2 and value.endswith(quote):
-                value = value[1:-1]
+            closing = value.find(value[0], 1)
+            if closing < 0:
+                continue
+            trailing = value[closing + 1:].strip()
+            if trailing and not trailing.startswith("#"):
+                continue
+            value = value[1:closing]
         else:
             value = value.split(" #", 1)[0].rstrip()
         values[name] = value
@@ -51,7 +59,10 @@ def _read_model_env_file():
 
 
 def model_settings():
-    """Return model settings; process variables override .env, including empty ones."""
+    """Internal credentials; process variables override .env, even when empty.
+
+    The returned values include secrets and must never be logged or serialized.
+    """
     file_values = _read_model_env_file()
     return {name: os.environ[name] if name in os.environ else file_values.get(name)
             for name in _MODEL_ENV_KEYS}
@@ -159,19 +170,37 @@ def _fallback(facts):
     return {section: list(items)[:2] for section, items in facts.items()}
 
 
+class ModelOutputError(ValueError):
+    """A model response did not select only allowed computed facts."""
+
+
+def _unique_object(pairs):
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise ModelOutputError("Duplicate model selection key")
+        result[name] = value
+    return result
+
+
 def _validate_selection(output, facts):
+    if not isinstance(output, str):
+        raise ModelOutputError("Model did not return text")
     cleaned = output.strip()
     lines = cleaned.splitlines()
     if len(lines) >= 3 and lines[0] in ("```json", "```") and lines[-1] == "```":
         cleaned = "\n".join(lines[1:-1]).strip()
-    selected = json.loads(cleaned)
+    try:
+        selected = json.loads(cleaned, object_pairs_hook=_unique_object)
+    except json.JSONDecodeError as exc:
+        raise ModelOutputError("Model did not return a complete JSON selection") from exc
     if not isinstance(selected, dict) or set(selected) != set(facts):
-        raise ValueError("Unexpected model selection shape")
+        raise ModelOutputError("Unexpected model selection shape")
     for section, chosen in selected.items():
         if (not isinstance(chosen, list) or not 1 <= len(chosen) <= 2
-                or len(chosen) != len(set(chosen))
-                or any(not isinstance(key, str) or key not in facts[section] for key in chosen)):
-            raise ValueError("Model selected unverified fact")
+                or any(not isinstance(key, str) or key not in facts[section] for key in chosen)
+                or len(chosen) != len(set(chosen))):
+            raise ModelOutputError("Model selected unverified fact")
     return selected
 
 
@@ -180,13 +209,15 @@ def _post_json(url, payload, api_key):
         raise ValueError("Model API URL must use HTTPS")
     req = request.Request(
         url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        data=json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8"),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    # The first request with a new strict schema can take longer to process.
-    with request.urlopen(req, timeout=20) as response:
-        return json.load(response)
+    with request.urlopen(req, timeout=_OPENAI_TIMEOUT_SECONDS) as response:
+        body = json.load(response)
+    if not isinstance(body, dict):
+        raise ModelOutputError("Unexpected provider response shape")
+    return body
 
 
 def _structured_text_format(name, properties):
@@ -213,42 +244,113 @@ def _select_with_openai(facts, api_key, model, evidence):
                             ensure_ascii=False, sort_keys=True),
         "text": _structured_text_format("city_fact_selection", properties),
         "store": False,
+        "max_output_tokens": 512,
     }
+    # The configured GPT-5.6 Sol supports none; this is a short selection task.
+    # Preserve compatibility with other models that do not accept reasoning.
+    if model == "gpt-5.6-sol":
+        payload["reasoning"] = {"effort": "none"}
     body = _post_json(_OPENAI_API_URL, payload, api_key)
-    # Responses may have multiple output items; collect all output_text blocks.
-    output = "".join(
-        block.get("text", "")
-        for item in body.get("output", []) if item.get("type") == "message"
-        for block in item.get("content", []) if block.get("type") == "output_text"
-    )
-    return _validate_selection(output, facts)
+    return _validate_selection(_openai_text(body), facts)
 
 
-def _select_with_nvidia(facts, api_key, model, evidence):
+def _openai_text(body):
+    """Accept only completed, non-refused Responses text output."""
+    if not isinstance(body, dict):
+        raise ModelOutputError("Unexpected provider response shape")
+    if body.get("status") not in (None, "completed") or body.get("error"):
+        raise ModelOutputError("Model response was not completed")
+    output = body.get("output")
+    if not isinstance(output, list):
+        raise ModelOutputError("Model response has no output")
+    texts = []
+    for item in output:
+        if not isinstance(item, dict):
+            raise ModelOutputError("Unexpected output item")
+        if item.get("type") != "message":
+            continue
+        if item.get("status") not in (None, "completed"):
+            raise ModelOutputError("Model message was not completed")
+        content = item.get("content")
+        if not isinstance(content, list):
+            raise ModelOutputError("Unexpected message content")
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") == "refusal":
+                raise ModelOutputError("Model did not provide a fact selection")
+            if block.get("type") == "output_text":
+                if not isinstance(block.get("text"), str):
+                    raise ModelOutputError("Model output is not text")
+                texts.append(block["text"])
+    return "".join(texts)
+
+
+class ModelRequestError(OSError):
+    """Wrap optional SDK errors without exposing provider response content."""
+
+
+def _nvidia_text(instructions, user_input, api_key, model):
     try:
         from openai import OpenAI, OpenAIError
     except ImportError as exc:
-        raise OSError("NVIDIA model client is not installed") from exc
+        raise ModelRequestError("NVIDIA model client is not installed") from exc
+    client = None
     try:
-        client = OpenAI(base_url=_NVIDIA_API_BASE_URL,
-                        api_key=api_key, timeout=45.0, max_retries=0)
+        client = OpenAI(base_url=_NVIDIA_API_BASE_URL, api_key=api_key,
+                        timeout=_NVIDIA_TIMEOUT_SECONDS, max_retries=0)
         completion = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": _INSTRUCTIONS},
-                {"role": "user", "content": json.dumps(
-                    {"candidates": facts, "calculated_evidence": evidence},
-                    ensure_ascii=False, sort_keys=True)},
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": user_input},
             ],
-            max_tokens=256,
+            max_tokens=512,
             stream=False,
         )
     except OpenAIError as exc:
-        raise OSError("NVIDIA model request failed") from exc
-    output = completion.choices[0].message.content
+        raise ModelRequestError("NVIDIA model request failed") from exc
+    finally:
+        if client is not None:
+            client.close()
+    choices = getattr(completion, "choices", None)
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise ModelOutputError("Unexpected model choices")
+    choice = choices[0]
+    if getattr(choice, "finish_reason", None) not in (None, "stop"):
+        raise ModelOutputError("Model response was not completed")
+    message = getattr(choice, "message", None)
+    if message is None or getattr(message, "refusal", None):
+        raise ModelOutputError("Model did not provide a fact selection")
+    output = getattr(message, "content", None)
     if not isinstance(output, str):
-        raise ValueError("Model did not return text")
-    return _validate_selection(output, facts)
+        raise ModelOutputError("Model output is not text")
+    return output
+
+
+def _select_with_nvidia(facts, api_key, model, evidence):
+    user_input = json.dumps({"candidates": facts, "calculated_evidence": evidence},
+                            ensure_ascii=False, sort_keys=True)
+    return _validate_selection(_nvidia_text(_INSTRUCTIONS, user_input, api_key, model), facts)
+
+
+def _failure_diagnostics(failure):
+    """Return only allowlisted metadata, never exception text or HTTP bodies."""
+    cause = failure.__cause__ if isinstance(failure, ModelRequestError) else failure
+    cause = cause or failure
+    details = {"error_type": type(cause).__name__}
+    status = cause.code if isinstance(cause, HTTPError) else getattr(cause, "status_code", None)
+    if type(status) is int and 100 <= status <= 599:
+        details["http_status"] = status
+        details["error_code"] = ("authentication" if status in (401, 403)
+                                 else "rate_limited" if status == 429
+                                 else "provider_error")
+    elif isinstance(cause, TimeoutError) or type(cause).__name__ == "APITimeoutError" or (
+            isinstance(cause, URLError) and isinstance(cause.reason, TimeoutError)):
+        details["error_code"] = "timeout"
+    elif isinstance(failure, (ValueError, TypeError, KeyError, IndexError)):
+        details["error_code"] = "invalid_model_output"
+    else:
+        details["error_code"] = "network_error"
+    return details
 
 
 def _explain_facts(facts, evidence, *, diagnostics=False):
@@ -268,19 +370,17 @@ def _explain_facts(facts, evidence, *, diagnostics=False):
             selected = selector(facts, api_key, model, evidence)
             return {"text": _render(facts, selected), "source": "model",
                     "provider": provider, "model": model}
-        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+        except (OSError, HTTPException, ValueError, KeyError, TypeError, IndexError) as exc:
             failure = exc
     answer = {
         "text": _render(facts, _fallback(facts)),
         "source": "computed_facts",
         "reason": "model_unavailable" if api_key and model else "model_not_configured",
     }
-    if diagnostics and failure is not None:
-        cause = failure.__cause__ or failure
-        answer["error_type"] = type(cause).__name__
-        status = getattr(cause, "status_code", None)
-        if isinstance(status, int):
-            answer["http_status"] = status
+    if diagnostics:
+        answer.update(provider=provider, model=model)
+        if failure is not None:
+            answer.update(_failure_diagnostics(failure))
     return answer
 
 
@@ -417,11 +517,13 @@ def _advice_facts(options, indicator_names=None):
 
 
 def _validate_advice_selection(output, facts, allowed_options):
+    if not isinstance(output, str):
+        raise ModelOutputError("Advisor returned no text")
     cleaned = output.strip()
     lines = cleaned.splitlines()
     if len(lines) >= 3 and lines[0] in ("```json", "```") and lines[-1] == "```":
         cleaned = "\n".join(lines[1:-1]).strip()
-    chosen = json.loads(cleaned)
+    chosen = json.loads(cleaned, object_pairs_hook=_unique_object)
     if not isinstance(chosen, dict) or set(chosen) != {"selected_option", "fact_ids"}:
         raise ValueError("Unexpected advisor response")
     oid = chosen["selected_option"]
@@ -429,8 +531,8 @@ def _validate_advice_selection(output, facts, allowed_options):
     if oid not in allowed_options:
         raise ValueError("Unknown option")
     if (not isinstance(ids, list) or not 2 <= len(ids) <= 5
-            or len(ids) != len(set(ids))
-            or any(not isinstance(fid, str) or fid not in facts for fid in ids)):
+            or any(not isinstance(fid, str) or fid not in facts for fid in ids)
+            or len(ids) != len(set(ids))):
         raise ValueError("Advisor selected unverified facts")
     if oid != "none" and not any(fid.startswith(oid + "_") for fid in ids):
         raise ValueError("Selected option has no evidence")
@@ -447,37 +549,19 @@ def _advisor_model_selection(question, facts, allowed_options, api_key, model, p
             "fact_ids": {"type": "array", "items": {"type": "string", "enum": sorted(facts)},
                          "minItems": 2, "maxItems": 5},
         }
-        body = _post_json(_OPENAI_API_URL, {
+        payload = {
             "model": model, "instructions": _ADVISOR_INSTRUCTIONS,
             "input": user_input,
             "text": _structured_text_format("city_advisor_selection", properties),
             "store": False,
-        }, api_key)
-        output = "".join(
-            block.get("text", "")
-            for item in body.get("output", []) if item.get("type") == "message"
-            for block in item.get("content", []) if block.get("type") == "output_text"
-        )
+            "max_output_tokens": 512,
+        }
+        # At most five fact IDs and one option need no free-form reasoning output.
+        if model == "gpt-5.6-sol":
+            payload["reasoning"] = {"effort": "none"}
+        output = _openai_text(_post_json(_OPENAI_API_URL, payload, api_key))
     else:
-        try:
-            from openai import OpenAI, OpenAIError
-        except ImportError as exc:
-            raise OSError("NVIDIA model client is not installed") from exc
-        try:
-            client = OpenAI(base_url=_NVIDIA_API_BASE_URL,
-                            api_key=api_key, timeout=45.0, max_retries=0)
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "system", "content": _ADVISOR_INSTRUCTIONS},
-                          {"role": "user", "content": user_input}],
-                max_tokens=256,
-                stream=False,
-            )
-        except OpenAIError as exc:
-            raise OSError("NVIDIA advisor request failed") from exc
-        output = completion.choices[0].message.content
-    if not isinstance(output, str):
-        raise ValueError("Advisor returned no text")
+        output = _nvidia_text(_ADVISOR_INSTRUCTIONS, user_input, api_key, model)
     return _validate_advice_selection(output, facts, allowed_options)
 
 
@@ -566,7 +650,7 @@ def advise(question, options, indicator_names=None):
                 raise ValueError("Advisor contradicts an explicit district constraint")
             selected_option, selected_facts = proposed_option, proposed_facts
             source = "model"
-        except (OSError, ValueError, KeyError, TypeError, IndexError):
+        except (OSError, HTTPException, ValueError, KeyError, TypeError, IndexError):
             pass
     label = next((option["label"] for option in options
                   if option["id"] == selected_option), None)
