@@ -1,10 +1,11 @@
 """Run one controlled explanation request without printing API credentials.
 
-Set NVIDIA_API_KEY and NVIDIA_MODEL (or OpenAI equivalents) in the shell first.
-Exit 0 only if a model selected verified facts for the official example.
+Set NVIDIA_API_KEY and NVIDIA_MODEL in the shell first.
+Exit 0 only if an NVIDIA model selected verified facts for the official example.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,17 +25,22 @@ DECISIONS = [
 
 
 def main():
+    if not os.getenv("NVIDIA_API_KEY") or not os.getenv("NVIDIA_MODEL"):
+        print("Для проверки NVIDIA задайте NVIDIA_API_KEY и NVIDIA_MODEL.", file=sys.stderr)
+        return 2
     result = simulate(DECISIONS)
     if not result["valid"] or result["cost"] != 95 or abs(result["score"] - 56.54307) > 1e-8:
         raise RuntimeError("Контрольный сценарий не совпал с датасетом")
     explanation = explain(result)
     print(json.dumps({"source": explanation.get("source"),
+                      "provider": explanation.get("provider"),
                       "model": explanation.get("model"),
                       "reason": explanation.get("reason"),
                       "score": result["score"],
                       "cost": result["cost"],
                       "text": explanation.get("text")}, ensure_ascii=False, indent=2))
-    return 0 if explanation.get("source") == "model" else 2
+    return 0 if (explanation.get("source") == "model"
+                 and explanation.get("provider") == "nvidia") else 2
 
 
 if __name__ == "__main__":
