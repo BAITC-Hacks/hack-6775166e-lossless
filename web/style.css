@@ -748,7 +748,7 @@ dialog>p:not(.dialog-label):not(.city-scope-note),.measure-facts,.dialog-label,.
 }
 
 /* Egor's original palette from dac5260, retained around the new city model. */
-:root{--paper:#f5f3eb;--panel:#fffefa;--ink:#243c35;--muted:#748178;--green:#294d40;--green-dark:#1d3b31;--lime:#dce6b4;--line:#dedfd3;--orange:#b67147;--soft:#ecefe3;--danger:#a14737;--serif:Georgia,'Times New Roman',serif;--sans:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color-scheme:light}
+:root{--paper:#f5f3eb;--panel:#fffefa;--ink:#243c35;--muted:#748178;--green:#294d40;--green-dark:#1d3b31;--lime:#dce6b4;--line:#dedfd3;--orange:#b67147;--soft:#ecefe3;--danger:#a14737;--serif:var(--display);--sans:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color-scheme:light}
 body{background:var(--paper);color:var(--ink);font:14px/1.5 var(--sans)}
 button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid var(--orange)}
 .topbar{background:var(--panel);border-color:var(--line)}

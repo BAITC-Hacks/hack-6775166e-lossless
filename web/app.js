@@ -8,7 +8,7 @@ const VERIFICATION_DECISIONS = [
   { measure_id: "M10", district: "Нура" }, { measure_id: "M12", district: null },
   { measure_id: "M5", district: "Сарыарка" }
 ];
-const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, diorama: null, dialogDiorama: null, dialogCommitted: false, slotPreviewIndex: null, drag: null };
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, diorama: null, dialogDiorama: null, dialogCommitted: false, dialogOpener: null, slotPreviewIndex: null, drag: null };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
@@ -670,6 +670,7 @@ function openMeasure(measureId, editingIndex = null) {
   const measure = measureById(measureId);
   if (!measure) return;
   state.dialogCommitted = false;
+  state.dialogOpener = document.activeElement;
   state.pending = { measureId, editingIndex, district: city(measure) ? null : editingIndex !== null ? state.decisions[editingIndex].district : state.selectedDistrict };
   syncScene();
   $("measure-category").textContent = `${measure.id} / ${categoryLabels[measure.category] || measure.category}`;
@@ -1133,10 +1134,17 @@ document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener(
 }));
 $("measure-dialog").addEventListener("close", () => {
   const rerender = !state.dialogCommitted && state.stage === "planner";
+  const measureId = state.pending?.measureId;
+  const opener = state.dialogOpener;
   state.dialogDiorama?.destroy(); state.dialogDiorama = null;
-  state.dialogCommitted = false;
+  state.dialogCommitted = false; state.dialogOpener = null;
   state.pending = null; state.hoverMeasureId = null;
   if (rerender) keepAnchorPosition($("measure-view"), renderMeasures);
+  if (rerender) {
+    const card = [...$("measure-cards").children].find((item) => item.dataset.measureId === measureId);
+    const focusTarget = opener?.isConnected ? opener : card?.querySelector(".measure-select") || $("view-district-measures");
+    focusTarget.focus({ preventScroll: true });
+  }
   syncScene();
 });
 start();
