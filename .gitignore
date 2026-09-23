@@ -1,0 +1,17 @@
+# Local AI-agent instructions, excluded from the submission.
+AGENTS.md
+agents.md
+
+# Local credentials and development artifacts.
+.env
+.env.*
+!.env.example
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.agent-worktrees/
+.agent-runtime/
+.pytest_cache/
+.mypy_cache/
