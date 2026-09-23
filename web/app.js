@@ -196,6 +196,9 @@ function renderInspector() {
   });
   const action = $("district-action");
   action.querySelector("span").textContent = resultMode ? "Изменить решения" : `Меры для района ${name}`;
+  $("inspector-note").textContent = resultMode
+    ? "Выберите район на схеме и сравните «Было» и «Стало». Все значения получены из расчёта вашего пакета."
+    : "Откройте район на схеме, затем направьте туда меры. Городские меры охватывают все пять районов.";
 }
 function selectDistrict(name, restoreFocus = false) {
   if (!state.catalog?.districts?.[name]) return;
