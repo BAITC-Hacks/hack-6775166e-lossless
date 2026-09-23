@@ -12,6 +12,7 @@
 | `agent/interface` | Егор | `web/index.html`, `web/app.js`, `web/style.css` | Интерфейс на согласованном API |
 | `agent/visualization` | Егор | `web/charts.js`, `web/charts.css`, `docs/visualization.md` | Графики из результата расчёта |
 | `agent/explanation` | Егор | `src/explanation.py`, `tests/test_explanation.py`, `scripts/check-model.py`, `docs/model-run-issue.md` | Объяснение только из проверенного результата, проверка реального вызова модели |
+| `agent/critic` | Саша | `docs/critic-review.md` | Независимый разбор MVP глазами жюри, заказчика, сторонника SOTA и эксперта по соответствию ТЗ; только проверяемые замечания с приоритетом и способом приёмки |
 | `main` | Саша | `src/server.py`, `README.md`, `AGENTS.md`, `docs/contracts.md`, `.env.example`, интеграция и сдача | Работающая отправленная версия |
 
 Общие файлы меняет Саша как интегратор. Если агенту нужен чужой файл или изменение API, он передаёт точное предложение владельцу; Саша фиксирует согласованное изменение здесь, после чего зависимые ветки обновляются. Визуализация монтируется в `#district-chart` через `window.renderDistrictCharts(container, result)`. Интерфейс, графики, оптимизатор и LLM не пересчитывают числовой Score и не подменяют результат `simulate()`.

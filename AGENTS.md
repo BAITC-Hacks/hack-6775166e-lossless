@@ -18,7 +18,7 @@
 
 | Владелец | Ветки агентов | Файлы |
 | --- | --- | --- |
-| Саша | `agent/engine`, `agent/benchmark-data`, `agent/optimizer` | `src/simulator.py`, `src/optimizer.py`, `tests/test_simulator.py`, `benchmark/`, `docs/benchmark-data.md` |
+| Саша | `agent/engine`, `agent/benchmark-data`, `agent/optimizer`, `agent/critic` | `src/simulator.py`, `src/optimizer.py`, `tests/test_simulator.py`, `benchmark/`, `docs/benchmark-data.md`, `docs/critic-review.md` |
 | Егор | `agent/interface`, `agent/visualization`, `agent/explanation` | `web/`, `src/explanation.py`, `tests/test_explanation.py`, `scripts/check-model.py`, `docs/visualization.md`, `docs/model-run-issue.md` |
 | Саша, интеграция | `main` | `src/server.py`, `README.md`, `AGENTS.md`, `docs/contracts.md`, `.env.example`, сборка и сдача |
 
