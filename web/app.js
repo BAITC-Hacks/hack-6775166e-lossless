@@ -8,7 +8,7 @@ const VERIFICATION_DECISIONS = [
   { measure_id: "M10", district: "Нура" }, { measure_id: "M12", district: null },
   { measure_id: "M5", district: "Сарыарка" }
 ];
-const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, drag: null };
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, diorama: null, slotPreviewIndex: null, drag: null };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
@@ -88,8 +88,8 @@ function keepAnchorPosition(anchor, update) {
 }
 function validate(decisions, requireFive = false) {
   const errors = [];
-  if (requireFive && decisions.length !== 5) errors.push("Для подписания нужно ровно пять распоряжений.");
-  if (decisions.length > 5) errors.push("В пакете уже пять распоряжений. Сначала уберите одно из них.");
+  if (requireFive && decisions.length !== 5) errors.push("Для расчёта нужны ровно пять мер.");
+  if (decisions.length > 5) errors.push("В плане уже пять мер. Сначала уберите одну из них.");
   const ids = new Set();
   const counts = {};
   decisions.forEach((decision) => {
@@ -99,7 +99,7 @@ function validate(decisions, requireFive = false) {
     ids.add(measure.id);
     counts[measure.category] = (counts[measure.category] || 0) + 1;
     if (city(measure) && decision.district !== null) errors.push("Для городской меры район не указывается.");
-    if (!city(measure) && !districtNames().includes(decision.district)) errors.push("Выберите район для распоряжения.");
+    if (!city(measure) && !districtNames().includes(decision.district)) errors.push("Выберите район для меры.");
   });
   Object.entries(counts).forEach(([category, count]) => {
     if (count > 2) errors.push(`В направлении «${category}» уже две меры. Выберите другое направление.`);
@@ -119,6 +119,7 @@ function validate(decisions, requireFive = false) {
 function setDecisions(decisions, message) {
   if (locked()) return;
   state.hoverMeasureId = null;
+  state.slotPreviewIndex = null;
   state.resultView = "after";
   state.decisions = decisions.map((item) => ({ measure_id: item.measure_id, district: item.district }));
   state.revision += 1;
@@ -144,27 +145,62 @@ function syncScene() {
   const focus = state.pending?.measureId || state.hoverMeasureId;
   const measure = focus && measureById(focus);
   const affected = measure ? (city(measure) ? districtNames() : [state.pending?.district || state.selectedDistrict].filter(Boolean)) : [];
-  const coverage = $("coverage-districts");
-  coverage.replaceChildren();
-  $("coverage-label").textContent = measure ? `${measure.id} · ${city(measure) ? "весь город" : state.pending?.district || state.selectedDistrict}` : "Наведите на меру";
-  districtNames().forEach((name) => {
-    const chip = node("span", name, `coverage-chip${affected.includes(name) ? " is-affected" : ""}${name === state.selectedDistrict ? " is-selected" : ""}`);
-    chip.dataset.dropDistrict = name;
-    coverage.append(chip);
-  });
-  const cityChip = node("span", "Весь город", `coverage-chip coverage-city${measure && city(measure) ? " is-affected" : ""}`);
-  cityChip.dataset.dropCity = "true";
-  coverage.append(cityChip);
+  $("coverage-label").textContent = measure ? `${measure.id} · ${city(measure) ? "весь город" : state.pending?.district || state.selectedDistrict}` : "Перетащите меру";
+  for (const hostId of ["coverage-districts", "mobile-drop-targets"]) {
+    const host = $(hostId);
+    if (host.childElementCount !== districtNames().length + 1) {
+      host.replaceChildren();
+      districtNames().forEach((name) => {
+        const chip = node("span", name, "coverage-chip");
+        chip.dataset.dropDistrict = name;
+        chip.setAttribute("aria-label", `Цель перетаскивания: район ${name}`);
+        host.append(chip);
+      });
+      const cityChip = node("span", "Весь город", "coverage-chip coverage-city");
+      cityChip.dataset.dropCity = "true";
+      cityChip.setAttribute("aria-label", "Цель перетаскивания: весь город");
+      host.append(cityChip);
+    }
+    [...host.children].forEach((chip) => {
+      const name = chip.dataset.dropDistrict;
+      chip.classList.toggle("is-affected", name ? affected.includes(name) : Boolean(measure && city(measure)));
+      chip.classList.toggle("is-selected", Boolean(name && name === state.selectedDistrict));
+    });
+  }
+  syncInitiativePreview();
   if (!state.scene) return;
   try {
     state.scene.update({
       districts: state.catalog.districts,
       selected: state.selectedDistrict,
       affected,
+      decisions: state.decisions,
+      measures: state.catalog.measures,
       resultDistricts: state.result?.districts || null,
       mode: state.stage === "report" && state.resultView === "after" && state.result ? "result" : "baseline"
     });
   } catch (error) { console.error("City scene update failed", error); }
+}
+function syncInitiativePreview() {
+  if (!state.catalog) return;
+  const drag = state.drag?.started ? state.drag : null;
+  const slot = state.slotPreviewIndex !== null ? state.decisions[state.slotPreviewIndex] : null;
+  const latest = state.decisions[state.decisions.length - 1];
+  const item = drag ? { measure_id: drag.measure.id, district: drag.target?.kind === "district" && !dropError(drag.measure, drag.target) ? drag.target.name : state.selectedDistrict }
+    : state.pending ? { measure_id: state.pending.measureId, district: state.pending.district }
+    : state.hoverMeasureId ? { measure_id: state.hoverMeasureId, district: state.selectedDistrict }
+    : slot || latest || null;
+  const measure = item && measureById(item.measure_id);
+  const district = measure && !city(measure) ? item.district || state.selectedDistrict : null;
+  const preview = Boolean(drag || state.pending || state.hoverMeasureId);
+  const mode = preview ? "preview" : state.stage === "report" && state.result ? "result" : "plan";
+  $("initiative-caption").textContent = measure ? `${measure.id} · ${district || "весь город"}` : "Выберите меру";
+  try { state.diorama?.update({ measure: measure || null, district, mode }); }
+  catch (error) { console.error("Measure scene update failed", error); }
+  const scenePreview = drag ? drag.target && !dropError(drag.measure, drag.target) ? { measureId: measure.id, district } : null
+    : preview && measure ? { measureId: measure.id, district } : null;
+  try { state.scene?.setInitiativePreview?.(scenePreview); }
+  catch (error) { console.error("City initiative preview failed", error); }
 }
 function renderDistrictRail() {
   const host = $("district-cards");
@@ -206,7 +242,7 @@ function renderInspector() {
   const afterScore = state.result?.districts?.[name]?.score;
   change.hidden = !resultMode || state.resultView !== "after" || !finite(afterScore);
   change.textContent = finite(afterScore) ? `Было ${format(baseline.score)} → стало ${format(afterScore)}` : "";
-  $("inspector-needs-label").textContent = resultMode ? "Слабые места до ваших решений" : "Два самых слабых показателя";
+  $("inspector-needs-label").textContent = resultMode ? "Слабые показатели до применения мер" : "Два самых слабых показателя";
   const host = $("inspector-needs"); host.replaceChildren();
   weakNeeds(name).forEach(([key, baselineValue]) => {
     const value = finite(current?.indicators?.[key]) ? current.indicators[key] : baselineValue;
@@ -225,7 +261,7 @@ function renderInspector() {
   const action = $("district-action");
   action.querySelector("span").textContent = resultMode ? "Изменить решения" : `Меры для района ${name}`;
   $("inspector-note").textContent = resultMode
-    ? "Выберите район на схеме и сравните «Было» и «Стало». Все значения получены из расчёта вашего пакета."
+    ? "Выберите район на схеме и сравните «Было» и «Стало». Все значения получены из расчёта плана."
     : "Откройте район на схеме, затем направьте туда меры. Городские меры охватывают все пять районов.";
 }
 function selectDistrict(name, restoreFocus = false) {
@@ -344,6 +380,7 @@ function previewDrop(drag, clientX, clientY) {
     }
     if (key) $("drop-board-hint").textContent = error || `${drag.measure.id} → ${target.name}`;
     else $("drop-board-hint").textContent = city(drag.measure) ? "Цель: весь город" : "Выберите один из пяти районов";
+    syncInitiativePreview();
     try { state.scene?.setDropPreview?.(target?.kind === "district" && !error ? target.name : null); }
     catch (error) { console.error("City drop preview failed", error); }
   }
@@ -485,7 +522,7 @@ function renderMeasures() {
     button.type = "button";
     button.disabled = selected || locked();
     button.setAttribute("aria-label", selected ? `${measure.id} уже в пакете` : `Выбрать ${measure.id}: ${measure.name}`);
-    button.append(node("span", selected ? "В вашем пакете" : "Направить меру"), icon(selected ? "check" : "plus"));
+    button.append(node("span", selected ? "В плане" : "Выбрать меру"), icon(selected ? "check" : "plus"));
     button.addEventListener("click", () => openMeasure(measure.id));
     const grip = node("button", null, `measure-drag-grip${!selected && state.decisions.length === 0 && visible[0] === measure ? " is-demo" : ""}`);
     grip.type = "button";
@@ -514,8 +551,14 @@ function renderSlots() {
     const decision = state.decisions[index];
     const slot = node("div", null, `decision-slot${decision ? "" : " is-empty"}`);
     slot.append(node("span", String(index + 1).padStart(2, "0"), "decision-number"));
-    if (!decision) slot.append(node("span", "Место для вашего решения"));
+    if (!decision) slot.append(node("span", "Место для меры"));
     else {
+      const previewSlot = () => { state.slotPreviewIndex = index; syncInitiativePreview(); };
+      const clearSlot = () => { if (state.slotPreviewIndex === index) { state.slotPreviewIndex = null; syncInitiativePreview(); } };
+      slot.addEventListener("pointerenter", previewSlot);
+      slot.addEventListener("pointerleave", clearSlot);
+      slot.addEventListener("focusin", previewSlot);
+      slot.addEventListener("focusout", (event) => { if (!slot.contains(event.relatedTarget)) clearSlot(); });
       const measure = measureById(decision.measure_id);
       const copy = node("div", null, "decision-copy");
       copy.append(node("strong", measure.name));
@@ -535,7 +578,7 @@ function renderSlots() {
       remove.append(icon("close"));
       remove.addEventListener("click", () => {
         if (locked()) return;
-        setDecisions(state.decisions.filter((_, position) => position !== index), `Распоряжение ${measure.id} убрано из пакета.`);
+        setDecisions(state.decisions.filter((_, position) => position !== index), `Мера ${measure.id} убрана из плана.`);
         const next = host.querySelector("button:not(:disabled)") || $("catalog-title");
         if (next.tagName !== "BUTTON") next.setAttribute("tabindex", "-1");
         next.focus({ preventScroll: true });
@@ -563,14 +606,14 @@ function updateBudget() {
   $("budget-hint").textContent = spent > budget() ? `Бюджет превышен на ${format(spent - budget(), 0)} ед.` : `На оставшиеся решения: ${format(budget() - spent, 0)} ед.`;
   const errors = validate(state.decisions, true);
   $("submit-plan").disabled = !!state.busy || errors.length > 0;
-  $("submit-plan").querySelector("span").textContent = state.busy === "simulate" ? "Считаем последствия…" : "Подписать распоряжения";
+  $("submit-plan").querySelector("span").textContent = state.busy === "simulate" ? "Выполняется расчёт…" : "Рассчитать результат";
   $("suggest-plan").disabled = !!state.busy;
   $("compare-plan").disabled = !!state.busy || !state.result;
-  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Оптимизатор считает план…" : "Сравнить с оптимумом";
+  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Выполняется подбор…" : "Сравнить с оптимумом";
   $("recommend-change").disabled = !!state.busy || !state.result;
-  $("recommend-change").querySelector("span").textContent = state.busy === "recommend" ? "Ищем одну замену…" : "Улучшить одно распоряжение";
-  $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Оптимизатор считает план…" : "Оптимум по Score";
-  $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем пакет и готовим итоговый доклад" : state.busy === "optimize" ? "Оптимизатор рассчитывает вариант. Ваш пакет сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "распоряжение" : missing < 5 ? "распоряжения" : "распоряжений"}` : errors[0] || "Пакет готов к проверке и расчёту";
+  $("recommend-change").querySelector("span").textContent = state.busy === "recommend" ? "Ищем одну замену…" : "Проверить одну замену";
+  $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Выполняется подбор…" : "Рассчитанный вариант";
+  $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем план и рассчитываем результат" : state.busy === "optimize" ? "Выполняется подбор. Текущий план сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "меру" : missing < 5 ? "меры" : "мер"}` : errors[0] || "План готов к расчёту";
 }
 function renderPlanner() { renderCategories(); renderMeasures(); renderSlots(); updateBudget(); }
 function setBusy(kind) {
@@ -591,7 +634,7 @@ function updatePending() {
   const validation = $("measure-validation");
   validation.replaceChildren();
   errors.forEach((error) => validation.append(node("p", error)));
-  validation.classList.toggle("is-neutral", errors.length === 1 && errors[0] === "Выберите район для распоряжения.");
+  validation.classList.toggle("is-neutral", errors.length === 1 && errors[0] === "Выберите район для меры.");
   $("confirm-measure").disabled = errors.length > 0 || locked();
 }
 function openMeasure(measureId, editingIndex = null) {
@@ -645,7 +688,7 @@ function confirmMeasure() {
   const id = state.pending.measureId;
   const slotIndex = decisions.findIndex((decision) => decision.measure_id === id);
   $("measure-dialog").close();
-  setDecisions(decisions, `Распоряжение ${id} в пакете. Выбрано ${decisions.length} из пяти.`);
+  setDecisions(decisions, `Мера ${id} в плане. Выбрано ${decisions.length} из пяти.`);
   const focusTarget = $("decision-slots").children[slotIndex]?.querySelector("button:not(:disabled)");
   focusTarget?.focus({ preventScroll: true });
 }
@@ -667,7 +710,7 @@ function showPlanErrors(errors) {
   errors.forEach((error) => list.append(node("li", typeof error === "string" ? error : "Сервер отклонил пакет решений.")));
   host.append(list); host.hidden = false;
   state.result = null; syncNavigation(); renderDistrictRail(); renderInspector(); syncScene();
-  announce("Пакет не подписан. Проверьте причины рядом с распоряжениями.");
+  announce("Расчёт не выполнен. Проверьте причины рядом с планом.");
   host.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 function displayExplanation(explanation) {
@@ -677,7 +720,7 @@ function displayExplanation(explanation) {
   else if (explanation?.source === "computed_facts") source.textContent = "AI-модель недоступна. Показан разбор по рассчитанным фактам.";
   else source.textContent = "Пояснение к результату сервера";
   const content = typeof explanation === "string" ? explanation : explanation?.text;
-  if (typeof content !== "string" || !content.trim()) { host.append(node("p", "Советник сейчас недоступен. Результаты расчёта сохранены в докладе.")); return; }
+  if (typeof content !== "string" || !content.trim()) { host.append(node("p", "Пояснение сейчас недоступно. Результаты расчёта сохранены.")); return; }
   // Explanations are assembled from server facts. Localize labels and decimal
   // punctuation only; the simulator's values and Score are displayed unchanged.
   const displayText = ["computed_facts", "model"].includes(explanation?.source)
@@ -724,7 +767,7 @@ function renderReport(result, decisions) {
   decisions.forEach((decision, index) => {
     const measure = measureById(decision.measure_id);
     const card = node("article", null, "signed-decision");
-    const number = node("span", `РАСПОРЯЖЕНИЕ 0${index + 1}`, "decision-number"); number.append(icon("check"));
+    const number = node("span", `МЕРА 0${index + 1}`, "decision-number"); number.append(icon("check"));
     card.append(number, node("strong", measure.name), node("small", `${decision.district || "Весь город"} · ${format(measure.cost, 0)} ед.`));
     signed.append(card);
   });
@@ -738,7 +781,7 @@ async function calculate() {
   state.result = null; state.proposal = null; $("comparison").hidden = true;
   renderDistrictRail(); renderInspector(); syncScene();
   syncNavigation(); notice(""); $("plan-errors").hidden = true;
-  setBusy("simulate"); announce("Проверяем распоряжения и готовим доклад.");
+  setBusy("simulate"); announce("Проверяем план и рассчитываем результат.");
   try {
     const result = await requestJson(API.simulate, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions }) });
     if (revision !== state.revision) return;
@@ -748,10 +791,10 @@ async function calculate() {
     state.result = result;
     state.resultView = "after";
     renderReport(result, decisions);
-    setStage("report"); scrollToSection($("stage-report")); announce(`Пять распоряжений подписаны. Итоговый Score ${format(result.score)}.`);
+    setStage("report"); scrollToSection($("stage-report")); announce(`План из пяти мер рассчитан. Итоговый балл ${format(result.score)}.`);
   } catch (error) {
     console.error("Simulation request failed", error);
-    if (revision === state.revision) showPlanErrors(["Не удалось получить расчёт. Ваш пакет сохранён — попробуйте подписать его ещё раз."]);
+    if (revision === state.revision) showPlanErrors(["Не удалось получить расчёт. План сохранён — повторите расчёт."]);
   } finally { setBusy(null); }
 }
 function validateProposal(result) {
@@ -835,24 +878,24 @@ function showSuggestion(result, decisions, explanation = null, removed = [], add
 }
 async function suggestPlan() {
   if (state.busy) return;
-  notice(""); state.proposal = null; setBusy("optimize"); announce("Оптимизатор ищет лучший план по Score. Ваш пакет остаётся у вас.");
+  notice(""); state.proposal = null; setBusy("optimize"); announce("Подбирается расчётный вариант. Текущий план не изменён.");
   try {
     const result = await requestJson(API.optimize);
     const decisions = validateProposal(result);
-    $("suggestion-title").textContent = "Глобальный оптимум заданной модели.";
+    $("suggestion-title").textContent = "Оптимальный план по модели.";
     $("suggestion-description").textContent = "Лучший допустимый план среди всех комбинаций пяти мер по формуле задачи. Сравните районы перед выбором.";
     showSuggestion(result, decisions);
   } catch (error) {
     console.error("Proposal request failed", error);
     if (state.stage === "report") { setStage("planner"); scrollToSection($("planner-notice")); }
-    notice("Оптимизатор сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
+    notice("Подбор сейчас недоступен. Текущий план сохранён.", true);
   } finally { setBusy(null); }
 }
 async function recommendChange() {
   if (state.busy || !state.result) return;
   const revision = state.revision;
   const decisions = state.decisions.map((item) => ({ ...item }));
-  setBusy("recommend"); announce("Оптимизатор ищет лучшую замену одного распоряжения.");
+  setBusy("recommend"); announce("Проверяется замена одной меры.");
   try {
     const answer = await requestJson(API.recommendChange, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions })
@@ -862,13 +905,13 @@ async function recommendChange() {
         || Math.abs(answer.current.score - state.result.score) > 1e-8) throw new Error("Incomplete comparison");
     const proposed = { ...answer.proposed, decisions: answer.decisions };
     const next = validateProposal(proposed);
-    $("suggestion-title").textContent = "Одна замена. Проверенный результат.";
-    $("suggestion-description").textContent = "Оптимизатор сохранил четыре ваших решения и проверил лучшую допустимую замену симулятором.";
+    $("suggestion-title").textContent = "Расчёт замены одной меры.";
+    $("suggestion-description").textContent = "Четыре меры сохранены; предложенная замена проверена симулятором.";
     showSuggestion(proposed, next, answer.explanation, answer.removed || [], answer.added || [], answer.score_delta > 0);
   } catch (error) {
     console.error("One-change recommendation failed", error);
-    announce("Совет по одной замене сейчас недоступен. Ваш план сохранён.");
-    notice("Совет по одной замене сейчас недоступен. Ваш план сохранён.", true);
+    announce("Расчёт замены сейчас недоступен. Текущий план сохранён.");
+    notice("Расчёт замены сейчас недоступен. Текущий план сохранён.", true);
   } finally { setBusy(null); }
 }
 function clearAdvisorResponse() {
@@ -958,10 +1001,10 @@ function applySuggestion() {
   if (!state.proposal || state.busy) return;
   const decisions = state.proposal.decisions;
   $("suggestion-dialog").close();
-  setDecisions(decisions, "Рассчитанный план перенесён в пакет. Его можно изменить перед подписанием.");
+  setDecisions(decisions, "Рассчитанный вариант перенесён в план. Его можно изменить перед новым расчётом.");
   setStage("planner");
   scrollToSection($("portfolio-title"));
-  notice("Рассчитанный план в вашем пакете. Проверьте пять распоряжений и подпишите, когда будете готовы.");
+  notice("Рассчитанный вариант в плане. Проверьте пять мер и запустите расчёт.");
 }
 async function start() {
   $("loading").hidden = false; $("load-error").hidden = true;
@@ -983,6 +1026,11 @@ async function start() {
         try { state.scene?.destroy(); state.scene = window.createCityScene(host, { onSelect: (name) => selectDistrict(name) }); $("app").classList.add("has-scene"); syncScene(); }
         catch (error) { console.error("City scene unavailable", error); host.textContent = "Выберите район в строке под схемой."; }
       } else host.textContent = "Выберите район в строке под схемой.";
+      const mini = $("measure-scene-preview");
+      if (typeof window.createInitiativeDiorama === "function") {
+        try { state.diorama?.destroy(); state.diorama = window.createInitiativeDiorama(mini); syncInitiativePreview(); }
+        catch (error) { console.error("Measure scene unavailable", error); mini.textContent = "Модель меры недоступна."; }
+      } else mini.textContent = "Выберите меру для просмотра.";
     });
   } catch (error) {
     console.error("Catalogue request failed", error);
