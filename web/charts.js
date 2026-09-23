@@ -9,9 +9,7 @@
     B1: "Безопасность улиц", B2: "Безопасность движения",
     C1: "Надёжность ЖКХ", C2: "Обращения жителей"
   };
-  const format = (value, digits = 2) => Number(value).toLocaleString("ru-RU", {
-    minimumFractionDigits: digits, maximumFractionDigits: digits
-  });
+  const format = (value, digits = 2) => Number(value).toFixed(digits).replace(".", ",");
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
   const element = (tag, className, label) => {
     const node = document.createElement(tag);
