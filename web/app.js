@@ -345,6 +345,7 @@ function finishMeasureDrag(event, cancelled = false) {
   try { drag.source.releasePointerCapture?.(drag.pointerId); } catch (_) { /* capture may already be released */ }
   if (!drag.started) {
     if (!cancelled && drag.pointerType === "mouse" && !drag.fromGrip) openMeasure(drag.measure.id);
+    else if (cancelled) { state.hoverMeasureId = null; syncScene(); }
     return;
   }
   if (drag.fromGrip) {
@@ -375,7 +376,7 @@ function finishMeasureDrag(event, cancelled = false) {
     } else drag.ghost.remove();
   }
   if (shortTravel) { syncScene(); openMeasure(drag.measure.id); }
-  else if (!cancelled && error) { notice(error, true); dragMessage(error, true); }
+  else if (!cancelled && error) { syncScene(); notice(error, true); dragMessage(error, true); }
   else if (!cancelled && target) {
     const decision = { measure_id: drag.measure.id, district: target.kind === "city" ? null : target.name };
     const next = [...state.decisions, decision];

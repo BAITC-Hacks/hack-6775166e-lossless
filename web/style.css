@@ -736,3 +736,13 @@ dialog>p:not(.dialog-label):not(.city-scope-note),.measure-facts,.dialog-label,.
 .drag-toast.is-error{border-color:var(--orange);color:#ffe2a3;background:#3c302b}
 @media(max-width:850px){.drop-targets{grid-template-columns:repeat(3,minmax(0,1fr))}.drop-target{min-height:54px}.drop-board{bottom:max(8px,env(safe-area-inset-bottom))}}
 @media(max-width:430px){.measure-actions .measure-select{font-size:12px}.drop-board-heading{font-size:10px}.drop-target strong{font-size:12px}.drop-target small{font-size:11px}.drag-ghost strong{font-size:12px}}
+@media(max-width:430px){
+  .measure-cards{grid-template-columns:minmax(0,1fr)}
+  .measure-card{min-height:0;padding:14px 15px}
+  .measure-card h3{font-size:16px;line-height:1.3;margin-bottom:8px}
+  .measure-meta{margin:8px 0 6px;gap:6px 12px;font-size:11px}
+  .measure-relevance{margin:5px 0;font-size:11px}
+  .measure-actions{margin-top:12px}
+  .measure-actions .measure-select{min-height:48px}
+  .measure-drag-grip{flex-basis:48px;width:48px;min-height:48px}
+}
