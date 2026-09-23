@@ -146,8 +146,7 @@ def _select_with_nvidia(facts, api_key, model):
         ],
         "stream": False,
     }
-    url = os.getenv("NVIDIA_API_URL") or _NVIDIA_API_URL
-    body = _post_json(url, payload, api_key)
+    body = _post_json(_NVIDIA_API_URL, payload, api_key)
     output = body["choices"][0]["message"]["content"]
     if not isinstance(output, str):
         raise ValueError("Model did not return text")
