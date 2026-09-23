@@ -1,6 +1,6 @@
 "use strict";
 
-const API = { catalog: "/api/catalog", simulate: "/api/simulate" };
+const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize" };
 const state = { catalog: null, decisions: Array.from({ length: 5 }, () => ({ measure_id: "", district: null })) };
 const $ = (id) => document.getElementById(id);
 const formatScore = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(2).replace(".", ",") : "—";
@@ -132,6 +132,12 @@ function updateBudget() {
 
 function hideResult() { $("result-section").hidden = true; }
 
+function optimizerError(message) {
+  const host = $("optimizer-error");
+  host.textContent = message || "";
+  host.hidden = !message;
+}
+
 function showErrors(errors) {
   $("result-section").hidden = false;
   $("valid-result").hidden = true;
@@ -222,6 +228,8 @@ function showResult(result) {
 async function calculate() {
   const button = $("submit-plan");
   button.disabled = true;
+  $("suggest-plan").disabled = true;
+  optimizerError("");
   button.firstElementChild.textContent = "Считаем последствия…";
   try {
     const decisions = state.decisions.filter((item) => item.measure_id).map((item) => ({ measure_id: item.measure_id, district: item.district }));
@@ -230,7 +238,42 @@ async function calculate() {
     if (!response.ok && !Array.isArray(result.errors)) throw new Error(`Сервер вернул HTTP ${response.status}`);
     showResult(result);
   } catch (error) { showErrors([`Не удалось связаться с сервером: ${error.message}`]); }
-  finally { button.disabled = false; button.firstElementChild.textContent = "Рассчитать сценарий"; }
+  finally { button.disabled = false; $("suggest-plan").disabled = false; button.firstElementChild.textContent = "Рассчитать сценарий"; }
+}
+
+async function suggestPlan() {
+  const button = $("suggest-plan");
+  button.disabled = true;
+  $("submit-plan").disabled = true;
+  button.firstElementChild.textContent = "Ищем план…";
+  optimizerError("");
+  try {
+    const response = await fetch(API.optimize);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    if (!result?.valid || !Number.isFinite(Number(result.score)) || !Array.isArray(result.decisions) || result.decisions.length !== 5) {
+      throw new Error(Array.isArray(result?.errors) && result.errors.length ? result.errors.join(" ") : "сервер вернул неполный план");
+    }
+    const ids = new Set();
+    const proposed = result.decisions.map((decision) => {
+      const measure = selectedMeasure(decision?.measure_id);
+      if (!measure || ids.has(measure.id)) throw new Error("сервер вернул неизвестные или повторяющиеся мероприятия");
+      ids.add(measure.id);
+      const district = isCity(measure) ? null : decision.district;
+      if (!isCity(measure) && !districts().includes(district)) throw new Error("сервер не указал район для одной из мер");
+      return { measure_id: measure.id, district };
+    });
+    state.decisions = proposed;
+    renderSlots();
+    updateBudget();
+    showResult(result);
+  } catch (error) {
+    optimizerError(`Не удалось предложить план: ${error.message}. Ваш ручной выбор сохранён.`);
+  } finally {
+    button.disabled = false;
+    $("submit-plan").disabled = false;
+    button.firstElementChild.textContent = "Предложить план";
+  }
 }
 
 async function start() {
@@ -247,6 +290,7 @@ async function start() {
     $("loading").hidden = true;
     $("app").hidden = false;
     $("submit-plan").addEventListener("click", calculate);
+    $("suggest-plan").addEventListener("click", suggestPlan);
   } catch (error) {
     $("loading").hidden = true;
     $("app-error").textContent = `Не удалось загрузить исходные данные: ${error.message}. Обновите страницу после запуска сервера.`;

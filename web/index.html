@@ -53,7 +53,11 @@
               <div class="budget-track" role="progressbar" aria-label="Использованный бюджет" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="budget-progress"><span id="budget-fill"></span></div>
               <p id="budget-hint">Остаток бюджета не влияет на итоговый Score.</p>
             </div>
-            <button id="submit-plan" class="primary-button" type="button"><span>Рассчитать сценарий</span><span aria-hidden="true">↗</span></button>
+            <div class="action-row">
+              <button id="submit-plan" class="primary-button" type="button"><span>Рассчитать сценарий</span><span aria-hidden="true">↗</span></button>
+              <button id="suggest-plan" class="secondary-button" type="button"><span>Предложить план</span><span aria-hidden="true">✦</span></button>
+            </div>
+            <p id="optimizer-error" class="optimizer-error" role="alert" hidden></p>
             <p class="submit-note">Расчёт учитывает лаги, синергии, конфликты и показатели всех районов.</p>
           </section>
 

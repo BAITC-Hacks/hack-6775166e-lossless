@@ -3,3 +3,11 @@
 .district-row{grid-template-columns:minmax(82px,1fr) minmax(66px,max-content) minmax(66px,max-content);column-gap:20px}
 .district-row>b,.district-row>.delta{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
 @media(max-width:620px){.district-row{column-gap:12px;grid-template-columns:minmax(72px,1fr) minmax(60px,max-content) minmax(60px,max-content)}}
+.action-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:15px}
+.action-row .primary-button{margin-top:0}
+.secondary-button{display:flex;align-items:center;justify-content:space-between;width:100%;padding:16px 19px;border:1px solid #a4c26e;background:#f7ffe7;color:#24412d;font-size:14px;font-weight:800;text-align:left;transition:background .2s}
+.secondary-button:hover{background:#e9f7ca}
+.secondary-button:disabled{opacity:.55;cursor:wait}
+.secondary-button span:last-child{font-size:21px;line-height:18px}
+.optimizer-error{margin:11px 0 0;padding:12px 14px;border-left:3px solid #b85b43;background:#fff2ec;color:#884133;font-size:12px;line-height:1.45}
+@media(max-width:620px){.action-row{grid-template-columns:1fr}}
