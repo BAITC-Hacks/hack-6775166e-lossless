@@ -892,3 +892,21 @@ dialog::backdrop{background:#1d3b3170}
 .coverage-chip.is-hot-drop.is-invalid-drop{opacity:1;background:#f6e8df;border-color:var(--orange);color:#7c442c;box-shadow:inset 0 0 0 1px var(--orange),0 0 14px #b6714730}
 .dialog-initiative-scene{height:205px;min-height:205px;margin:12px 0 15px;overflow:hidden;border:1px solid #cbd5c5;background:#f7f8f1}
 @media(max-width:430px){.dialog-initiative-scene{height:182px;min-height:182px}}
+.example-entry{background:#edf0e2;border:1px solid #b7c5b2;border-left:3px solid var(--green)}
+.example-entry p{color:var(--ink);font-size:12px;line-height:1.5}
+.example-entry strong{color:var(--green)}
+.advisor-help-mark{background:var(--lime);border:1px solid var(--green);color:var(--green)}
+.advisor-form label{color:var(--green)}
+.advisor-form textarea{background:var(--panel);border-color:#aebbad;color:var(--ink);caret-color:var(--green)}
+.advisor-form textarea::placeholder{color:#65786a}
+.advisor-form textarea:focus-visible{outline-color:var(--orange)}
+.advisor-response-head span,.advisor-input-hint,.advisor-option small,.advisor-option p{color:#5e7062}
+.advisor-option{background:var(--paper);border-color:var(--line)}
+.advisor-option strong{color:var(--ink)}
+.advisor-option-picked{background:var(--lime);border-color:var(--green);color:var(--green)}
+.advisor-option-score{color:var(--green)}
+@media(max-width:620px){
+  .measure-dialog{scroll-padding-bottom:88px}
+  .measure-dialog .dialog-sticky-action{position:sticky;bottom:0;z-index:2;margin:14px -21px -21px;padding:12px 21px max(16px,env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line);box-shadow:0 -7px 16px #294d4017}
+  .measure-dialog .dialog-validation{scroll-margin-bottom:88px}
+}
