@@ -301,13 +301,16 @@ function previewDrop(drag, clientX, clientY) {
   const target = targetAt(clientX, clientY);
   const key = target ? `${target.kind}:${target.name}` : "";
   if (drag.targetKey !== key || drag.target?.element !== target?.element) {
-    document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop"));
+    document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop", "is-invalid-drop"));
     drag.targetKey = key;
     drag.target = target;
     const error = dropError(drag.measure, target);
     drag.ghost.classList.toggle("is-denied", Boolean(target && error));
     drag.ghost.classList.toggle("is-over", Boolean(target && !error));
-    if (target?.element) target.element.classList.add("is-hot-drop");
+    if (target?.element) {
+      target.element.classList.add("is-hot-drop");
+      target.element.classList.toggle("is-invalid-drop", Boolean(error));
+    }
     if (key) $("drop-board-hint").textContent = error || `${drag.measure.id} → ${target.name}`;
     else $("drop-board-hint").textContent = city(drag.measure) ? "Цель: весь город" : "Выберите один из пяти районов";
     try { state.scene?.setDropPreview?.(target?.kind === "district" && !error ? target.name : null); }
@@ -349,7 +352,7 @@ function finishMeasureDrag(event, cancelled = false) {
   const error = cancelled ? "" : dropError(drag.measure, target);
   document.body.classList.remove("is-dragging-measure");
   $("drop-board").hidden = true;
-  document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop"));
+  document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop", "is-invalid-drop"));
   drag.source.classList.remove("is-being-dragged");
   state.hoverMeasureId = null;
   try { state.scene?.setDropPreview?.(null); } catch (_) { /* optional scene API */ }
