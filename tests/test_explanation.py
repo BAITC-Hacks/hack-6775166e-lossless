@@ -164,6 +164,19 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(answer["source"], "computed_facts")
         self.assertIn("56,54 до 57,21", answer["text"])
 
+    def test_markdown_fenced_json_still_requires_verified_fact_ids(self):
+        chosen = {"strengths": ["strength_indicator"], "risks": ["risk_negative"],
+                  "tradeoffs": ["tradeoff_budget"]}
+        fenced = "```json\n" + json.dumps(chosen) + "\n```"
+        response = {"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": fenced}]}]}
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "", "NVIDIA_MODEL": "",
+                                  "OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "test-model"}), \
+                patch("src.explanation.request.urlopen", return_value=FakeResponse(response)):
+            answer = explain(RESULT)
+        self.assertEqual(answer["source"], "model")
+        self.assertIn("+10,00", answer["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

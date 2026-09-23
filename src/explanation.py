@@ -116,7 +116,11 @@ def _fallback(facts):
 
 
 def _validate_selection(output, facts):
-    selected = json.loads(output)
+    cleaned = output.strip()
+    lines = cleaned.splitlines()
+    if len(lines) >= 3 and lines[0] in ("```json", "```") and lines[-1] == "```":
+        cleaned = "\n".join(lines[1:-1]).strip()
+    selected = json.loads(cleaned)
     if not isinstance(selected, dict) or set(selected) != set(facts):
         raise ValueError("Unexpected model selection shape")
     for section, chosen in selected.items():
