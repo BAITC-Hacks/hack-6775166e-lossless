@@ -6,17 +6,55 @@ Every displayed fact is constructed from the deterministic simulator output.
 
 import json
 import os
+from pathlib import Path
 from urllib import request
 
 
 _OPENAI_API_URL = "https://api.openai.com/v1/responses"
-_NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+_NVIDIA_API_BASE_URL = "https://integrate.api.nvidia.com/v1"
+_MODEL_ENV_KEYS = ("NVIDIA_API_KEY", "NVIDIA_MODEL", "OPENAI_API_KEY", "OPENAI_MODEL")
+_DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 _INSTRUCTIONS = (
     "Ты объясняешь результат городской симуляции. Верни только JSON-объект "
     "с ключами strengths, risks, tradeoffs. Значение каждого ключа — массив из "
     "одного или двух ID из соответствующей секции candidates. Выбирай самые "
     "важные факты; не добавляй текст, числа, новые ID или другие ключи."
 )
+
+
+def _read_model_env_file():
+    """Read model settings from this checkout's .env without executing it."""
+    try:
+        lines = _DOTENV_PATH.read_text(encoding="utf-8-sig").splitlines()
+    except FileNotFoundError:
+        return {}
+    values = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, separator, value = line.partition("=")
+        name = name.strip()
+        if not separator or name not in _MODEL_ENV_KEYS:
+            continue
+        value = value.strip()
+        if value.startswith(("'", '"')):
+            quote = value[0]
+            if len(value) >= 2 and value.endswith(quote):
+                value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0].rstrip()
+        values[name] = value
+    return values
+
+
+def model_settings():
+    """Return model settings; process variables override .env, including empty ones."""
+    file_values = _read_model_env_file()
+    return {name: os.environ[name] if name in os.environ else file_values.get(name)
+            for name in _MODEL_ENV_KEYS}
 
 
 def _fmt(number):
@@ -167,48 +205,66 @@ def _select_with_openai(facts, api_key, model, evidence):
 
 
 def _select_with_nvidia(facts, api_key, model, evidence):
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _INSTRUCTIONS},
-            {"role": "user", "content": json.dumps(
-                {"candidates": facts, "calculated_evidence": evidence},
-                ensure_ascii=False, sort_keys=True)},
-        ],
-        "stream": False,
-    }
-    body = _post_json(_NVIDIA_API_URL, payload, api_key)
-    output = body["choices"][0]["message"]["content"]
+    try:
+        from openai import OpenAI, OpenAIError
+    except ImportError as exc:
+        raise OSError("NVIDIA model client is not installed") from exc
+    try:
+        client = OpenAI(base_url=_NVIDIA_API_BASE_URL,
+                        api_key=api_key, timeout=45.0, max_retries=0)
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _INSTRUCTIONS},
+                {"role": "user", "content": json.dumps(
+                    {"candidates": facts, "calculated_evidence": evidence},
+                    ensure_ascii=False, sort_keys=True)},
+            ],
+            max_tokens=256,
+            stream=False,
+        )
+    except OpenAIError as exc:
+        raise OSError("NVIDIA model request failed") from exc
+    output = completion.choices[0].message.content
     if not isinstance(output, str):
         raise ValueError("Model did not return text")
     return _validate_selection(output, facts)
 
 
-def _explain_facts(facts, evidence):
+def _explain_facts(facts, evidence, *, diagnostics=False):
     """Let the model select verified facts; never render free-form model text."""
-    nvidia_key, nvidia_model = os.getenv("NVIDIA_API_KEY"), os.getenv("NVIDIA_MODEL")
-    openai_key, openai_model = os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_MODEL")
+    settings = model_settings()
+    nvidia_key, nvidia_model = settings["NVIDIA_API_KEY"], settings["NVIDIA_MODEL"]
+    openai_key, openai_model = settings["OPENAI_API_KEY"], settings["OPENAI_MODEL"]
     if nvidia_key and nvidia_model:
         api_key, model, provider, selector = nvidia_key, nvidia_model, "nvidia", _select_with_nvidia
     elif openai_key and openai_model:
         api_key, model, provider, selector = openai_key, openai_model, "openai", _select_with_openai
     else:
         api_key = model = provider = selector = None
+    failure = None
     if api_key and model:
         try:
             selected = selector(facts, api_key, model, evidence)
             return {"text": _render(facts, selected), "source": "model",
                     "provider": provider, "model": model}
-        except (OSError, ValueError, KeyError, TypeError, IndexError):
-            pass
-    return {
+        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+            failure = exc
+    answer = {
         "text": _render(facts, _fallback(facts)),
         "source": "computed_facts",
         "reason": "model_unavailable" if api_key and model else "model_not_configured",
     }
+    if diagnostics and failure is not None:
+        cause = failure.__cause__ or failure
+        answer["error_type"] = type(cause).__name__
+        status = getattr(cause, "status_code", None)
+        if isinstance(status, int):
+            answer["http_status"] = status
+    return answer
 
 
-def explain(result):
+def explain(result, *, diagnostics=False):
     """Explain one verified scenario from its complete calculated evidence.
 
     NVIDIA_API_KEY + NVIDIA_MODEL take priority over OpenAI configuration.
@@ -216,10 +272,10 @@ def explain(result):
     """
     if not result.get("valid"):
         return {"text": "", "source": "computed_facts", "reason": "invalid_result"}
-    return _explain_facts(_facts(result), result)
+    return _explain_facts(_facts(result), result, diagnostics=diagnostics)
 
 
-def explain_comparison(current, proposed, removed, added):
+def explain_comparison(current, proposed, removed, added, *, diagnostics=False):
     """Explain a one-change recommendation from two verified simulations."""
     if not current.get("valid") or not proposed.get("valid"):
         return {"text": "", "source": "computed_facts", "reason": "invalid_result"}
@@ -272,7 +328,7 @@ def explain_comparison(current, proposed, removed, added):
     facts = {"strengths": strengths, "risks": risks, "tradeoffs": tradeoffs}
     evidence = {"current": current, "proposed": proposed,
                 "removed": removed, "added": added}
-    answer = _explain_facts(facts, evidence)
+    answer = _explain_facts(facts, evidence, diagnostics=diagnostics)
     answer["text"] = ("Совет по проверенному сравнению: " if gain > 0 else
                       "Сравнение проверенных сценариев: ") + answer["text"]
     return answer
@@ -374,13 +430,23 @@ def _advisor_model_selection(question, facts, api_key, model, provider):
             for block in item.get("content", []) if block.get("type") == "output_text"
         )
     else:
-        body = _post_json(_NVIDIA_API_URL, {
-            "model": model,
-            "messages": [{"role": "system", "content": _ADVISOR_INSTRUCTIONS},
-                         {"role": "user", "content": user_input}],
-            "stream": False,
-        }, api_key)
-        output = body["choices"][0]["message"]["content"]
+        try:
+            from openai import OpenAI, OpenAIError
+        except ImportError as exc:
+            raise OSError("NVIDIA model client is not installed") from exc
+        try:
+            client = OpenAI(base_url=_NVIDIA_API_BASE_URL,
+                            api_key=api_key, timeout=45.0, max_retries=0)
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": _ADVISOR_INSTRUCTIONS},
+                          {"role": "user", "content": user_input}],
+                max_tokens=256,
+                stream=False,
+            )
+        except OpenAIError as exc:
+            raise OSError("NVIDIA advisor request failed") from exc
+        output = completion.choices[0].message.content
     if not isinstance(output, str):
         raise ValueError("Advisor returned no text")
     return _validate_advice_selection(output, facts)
@@ -443,8 +509,9 @@ def advise(question, options, indicator_names=None):
     if [option.get("id") for option in options] != ["current", "one_change", "optimum"]:
         raise ValueError("Expected the three verified scenarios")
     facts = _advice_facts(options, indicator_names)
-    nvidia_key, nvidia_model = os.getenv("NVIDIA_API_KEY"), os.getenv("NVIDIA_MODEL")
-    openai_key, openai_model = os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_MODEL")
+    settings = model_settings()
+    nvidia_key, nvidia_model = settings["NVIDIA_API_KEY"], settings["NVIDIA_MODEL"]
+    openai_key, openai_model = settings["OPENAI_API_KEY"], settings["OPENAI_MODEL"]
     if nvidia_key and nvidia_model:
         api_key, model, provider = nvidia_key, nvidia_model, "nvidia"
     elif openai_key and openai_model:
@@ -472,7 +539,7 @@ def advise(question, options, indicator_names=None):
         summary = _fallback_district_summary(question, options)
         if summary:
             intro += summary + " "
-    text = intro + " ".join(facts[fid] for fid in selected_facts)
+    text = intro.strip() + "\n" + "\n".join(f"• {facts[fid]}" for fid in selected_facts)
     answer = {"text": text, "source": source, "selected_option": selected_option}
     if source == "model":
         answer.update(provider=provider, model=model)

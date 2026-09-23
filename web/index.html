@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f3eb">
-  <title>Пять распоряжений — Аким на 5 часов</title>
-  <link rel="stylesheet" href="/style.css">
+  <meta name="theme-color" content="#080e18">
+  <title>Астана / Пульт города — Аким на 5 часов</title>
   <link rel="stylesheet" href="/charts.css">
+  <link rel="stylesheet" href="/city3d.css">
+  <link rel="stylesheet" href="/style.css">
   <script src="/charts.js" defer></script>
+  <script src="/city3d.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -45,74 +47,58 @@
   <main id="main">
     <div id="loading" class="loading-state" role="status"><span class="spinner"></span> Готовим брифинг по городу…</div>
     <section id="load-error" class="load-error" role="alert" hidden><h1>Не удалось открыть брифинг</h1><p id="load-error-text"></p><button id="retry-catalog" class="button button-primary" type="button">Попробовать снова</button></section>
-    <div id="app" hidden>
+    <div id="app" data-stage="briefing" hidden>
+      <section class="city-deck" aria-labelledby="city-deck-title">
+        <div class="deck-heading">
+          <div><p class="eyebrow"><span class="signal-pulse"></span> СИМУЛЯТОР / АСТАНА / 05 РАЙОНОВ</p><h2 id="city-deck-title">ГОРОД <span>В ВАШИХ РУКАХ</span></h2></div>
+          <div class="deck-readouts" aria-label="Состояние города и пакета"><span><b id="deck-base-score">—</b><span id="deck-score-label">город сейчас / 100</span></span><span><b id="deck-count">0/5</b> решений</span><span><b id="deck-budget">0/100</b> бюджет</span></div>
+        </div>
+        <div class="city-deck-grid">
+          <div class="scene-shell">
+            <div class="scene-topline"><span><i></i> ПУЛЬТ ГОРОДА / УСЛОВНАЯ 3D-СХЕМА</span><span>НАЖМИТЕ НА РАЙОН</span></div>
+            <div id="city-scene" aria-label="Интерактивная условная трёхмерная схема пяти районов Астаны"></div>
+            <div id="district-cards" class="district-rail" role="group" aria-label="Выберите район"></div>
+            <div class="scene-footline"><span>Шкала качества: 0–100 · выше лучше</span><span>Данные одинаковы для всех игроков</span></div>
+          </div>
+          <aside class="district-inspector" aria-labelledby="district-inspector-title">
+            <div class="inspector-top"><span class="eyebrow">ДОСЬЕ РАЙОНА</span><span id="inspector-index" class="inspector-index">01 / 05</span></div>
+            <h3 id="district-inspector-title">Выберите район</h3>
+            <p id="inspector-profile" class="inspector-profile"></p>
+            <div class="inspector-score"><span id="inspector-score-label">Качество жизни района</span><strong id="inspector-score">—</strong><span id="inspector-score-change" class="inspector-change" hidden></span></div>
+            <div class="inspector-meter" aria-hidden="true"><span id="inspector-score-fill"></span></div>
+            <div class="inspector-needs-heading"><span id="inspector-needs-label">Два самых слабых показателя</span><span>0–100</span></div>
+            <div id="inspector-needs" class="inspector-needs"></div>
+            <div id="result-view-toggle" class="view-toggle" role="group" aria-label="Сравнение состояния района" hidden><button id="view-before" type="button" aria-pressed="false">Было</button><button id="view-after" type="button" aria-pressed="true">Стало</button></div>
+            <button id="district-action" class="button button-primary button-full inspector-action" type="button"><span>Выбрать меры для района</span><svg class="icon"><use href="#i-arrow"/></svg></button>
+            <p id="inspector-note" class="inspector-note">Откройте район на схеме, затем направьте туда меры. Городские меры охватывают все пять районов.</p>
+          </aside>
+        </div>
+      </section>
       <section id="stage-briefing" class="stage" aria-labelledby="briefing-title">
-        <div class="briefing-hero">
-          <div class="hero-copy">
-            <p class="eyebrow"><span class="small-rule"></span> ВАША СМЕНА НАЧИНАЕТСЯ</p>
-            <h1 id="briefing-title">Большой город.<br>Пять <em>ваших</em><br>распоряжений.</h1>
-            <p class="hero-description">Дорогам нужен транспорт, районам — школы и зелень. Возьмите управление на себя и решите, на что город потратит свой бюджет.</p>
-            <button id="start-shift" class="button button-primary" type="button">Принять управление <svg class="icon"><use href="#i-arrow"/></svg></button>
-            <span class="hero-footnote">Без таймера. Каждое решение можно пересмотреть.</span>
-          </div>
-          <div class="city-scene" aria-label="Декоративная иллюстрация города Астаны" role="img">
-            <div class="scene-label"><span class="status-dot"></span> ГОРОД В ВАШИХ РУКАХ</div>
-            <svg class="city-art" viewBox="0 0 620 410" fill="none" aria-hidden="true">
-              <circle cx="459" cy="113" r="76" fill="#e8b986"/>
-              <path d="M17 289 225 187 609 277 399 393Z" fill="#d4dbc5"/>
-              <path d="m39 314 353 77 211-108" stroke="#f4efe0" stroke-width="22"/>
-              <path d="m215 201 113 178M65 291l502 11" stroke="#f4efe0" stroke-width="16"/>
-              <path d="m45 339 294 66 239-54" stroke="#9ab7b0" stroke-width="24" stroke-linecap="round"/>
-              <path d="m173 329 100 22" stroke="#f1efdc" stroke-width="14"/>
-              <path d="m73 242 75 16v65l-75-17Z" fill="#b7c4bd"/><path d="m148 258 39-21v66l-39 20Z" fill="#6a8b7f"/><path d="m73 242 39-20 75 15-39 21Z" fill="#d9e0d4"/>
-              <path d="m93 259 35 8m-35 12 35 8m-35 12 35 8" stroke="#f5f2e5" stroke-width="7"/>
-              <path d="m159 264 16-9m-16 25 16-9m-16 25 16-9" stroke="#bad0c1" stroke-width="5"/>
-              <path d="m212 221 59 14v-91l-59-14Z" fill="#efe8d4"/><path d="m271 235 37-20v-91l-37 20Z" fill="#b6c4b3"/><path d="m212 130 37-20 59 14-37 20Z" fill="#f5f1e6"/>
-              <path d="m225 155 32 7m-32 12 32 7m-32 12 32 7m-32 12 32 7" stroke="#9cbaaf" stroke-width="7"/>
-              <path d="m280 157 17-9m-17 28 17-9m-17 28 17-9" stroke="#f4f1dd" stroke-width="5"/>
-              <path d="m426 270 62 14v-89l-62-14Z" fill="#caa68b"/><path d="m488 284 36-18v-89l-36 18Z" fill="#a37860"/><path d="m426 181 36-18 62 14-36 18Z" fill="#e1c2a5"/>
-              <path d="m438 204 38 9m-38 12 38 9m-38 12 38 9" stroke="#f0ddc5" stroke-width="8"/>
-              <path d="m498 207 16-8m-16 29 16-8m-16 29 16-8" stroke="#d8b79b" stroke-width="6"/>
-              <path d="m313 292 58 13 48-24-59-13Z" fill="#748d7c"/><path d="m313 292 58 13v15l-58-13Zm58 13 48-24v15l-48 24Z" fill="#597566"/>
-              <path d="M349 276 337 143m40 142 5-142M349 276l28 9" stroke="#ddd6bd" stroke-width="9"/>
-              <path d="m337 143 40 142m5-142-33 133m-11-120 42 55m-39-31 38 64" stroke="#ece5cd" stroke-width="4"/>
-              <circle cx="360" cy="116" r="34" fill="#d7ae63"/><path d="M333 119c13 16 40 19 55 1M360 82c-13 17-13 52 0 68" stroke="#eac887" stroke-width="3"/>
-              <path d="m537 271 39 9v-40l-39-9Z" fill="#e9e2cf"/><path d="m576 280 22-13v-40l-22 13Z" fill="#a1b4a7"/><path d="m537 231 22-13 39 9-22 13Z" fill="#f6f1df"/>
-              <g fill="#547963"><ellipse cx="209" cy="313" rx="20" ry="9" fill="#bdccb1"/><path d="M209 313v-42" stroke="#586d4b" stroke-width="5"/><circle cx="209" cy="269" r="21"/><circle cx="194" cy="279" r="14"/><circle cx="224" cy="281" r="15"/>
-              <ellipse cx="437" cy="331" rx="21" ry="9" fill="#bdccb1"/><path d="M437 330v-44" stroke="#586d4b" stroke-width="5"/><circle cx="437" cy="283" r="21"/><circle cx="422" cy="292" r="14"/><circle cx="451" cy="294" r="15"/>
-              <path d="M539 318v-32" stroke="#586d4b" stroke-width="4"/><circle cx="539" cy="283" r="17"/></g>
-              <path d="m105 328 30 7 14-7-30-7Z" fill="#bd7c56"/><path d="m105 328 30 7v10l-30-7Zm30 7 14-7v10l-14 7Z" fill="#986b4f"/>
-              <circle cx="114" cy="339" r="3" fill="#3c5149"/><circle cx="130" cy="343" r="3" fill="#3c5149"/>
-            </svg>
-            <div class="scene-note"><span class="scene-note-icon">↗</span><span>Будущее города<br><strong>начинается с выбора</strong></span></div>
-            <span class="scene-caption">Художественная иллюстрация · условные данные</span>
-          </div>
+        <div class="briefing-launch">
+          <div><p class="eyebrow">01 / НАЧНИТЕ С РАЙОНА</p><h1 id="briefing-title">ПЯТЬ РЕШЕНИЙ.<br><span>ОДИН ГОРОД.</span></h1></div>
+          <div class="briefing-launch-copy"><p>Выберите район на схеме. Посмотрите на два слабых показателя и направьте туда первые меры.</p><button id="start-shift" class="button button-secondary" type="button">Открыть все меры <svg class="icon"><use href="#i-arrow"/></svg></button></div>
         </div>
         <div class="mission-strip" aria-label="Условия симуляции">
           <div><strong id="briefing-budget">100</strong><span>единиц бюджета</span></div>
           <div><strong>5</strong><span>ваших распоряжений</span></div>
           <div><strong id="briefing-horizon">8</strong><span>кварталов до результата</span></div>
-          <div><strong id="base-score">—</strong><span>исходный Score города</span></div>
+          <div><strong id="base-score">—</strong><span>качество города / 100</span></div>
         </div>
-        <section class="district-briefing" aria-labelledby="districts-title">
-          <div class="section-heading"><div><p class="eyebrow">БРИФИНГ ПО РАЙОНАМ</p><h2 id="districts-title">Пять районов. Разные потребности.</h2></div><p class="section-aside">Все показатели — от 0 до 100.<br>Чем выше, тем лучше.</p></div>
-          <div id="district-cards" class="district-cards"></div>
-          <div class="briefing-bottom"><span>У каждого района есть слабые места. Вы решаете, с чего начать.</span><button class="text-button" type="button" data-stage="planner">К распоряжениям <svg class="icon"><use href="#i-arrow"/></svg></button></div>
-        </section>
       </section>
 
       <section id="stage-planner" class="stage" aria-labelledby="planner-title" hidden>
-        <div class="planner-heading"><div><p class="eyebrow">02 / РАБОЧИЙ СТОЛ АКИМА</p><h1 id="planner-title" class="page-title">Каким станет <em>ваш город?</em></h1><p>Соберите пакет из пяти распоряжений. Не более двух мер одного направления.</p></div><button id="suggest-plan" class="button button-secondary" type="button"><svg class="icon"><use href="#i-spark"/></svg><span>План советника</span></button></div>
+        <div class="planner-heading"><div><p class="eyebrow">02 / КОНСТРУКТОР РЕШЕНИЙ</p><h1 id="planner-title" class="page-title">СОБЕРИТЕ <span>ПАКЕТ.</span></h1><p>Район выбран на схеме. Пять разных мер, не более двух на направление.</p></div><button id="suggest-plan" class="button button-secondary" type="button"><svg class="icon"><use href="#i-spark"/></svg><span>План советника</span></button></div>
         <button id="mobile-plan-jump" class="mobile-plan-jump" type="button" aria-label="Перейти к пакету распоряжений"><span id="mobile-plan-count">0 из 5 решений</span><strong id="mobile-plan-budget">0 / 100 ед.</strong><svg class="icon"><use href="#i-arrow"/></svg></button>
         <div id="planner-notice" class="notice" role="status" hidden></div>
         <div class="planner-layout">
-          <section class="catalog" aria-labelledby="catalog-title"><div class="catalog-heading"><h2 id="catalog-title">Городские инициативы</h2><span id="catalog-count">14 мероприятий</span></div><div id="category-tabs" class="category-tabs" role="group" aria-label="Направление мероприятий"></div><div id="measure-cards" class="measure-cards"></div></section>
-          <aside class="portfolio" aria-labelledby="portfolio-title"><div class="portfolio-top"><span class="eyebrow">ПАКЕТ РЕШЕНИЙ</span><span id="decision-count" class="count-badge">0 / 5</span></div><h2 id="portfolio-title">Ваши распоряжения</h2><p class="portfolio-intro">Пять возможностей изменить город.</p><div id="decision-slots" class="decision-slots"></div><div class="budget-block"><div class="budget-label"><span>Бюджет пакета</span><strong><span id="budget-used">0</span> <span class="budget-total">/ 100</span></strong></div><div class="budget-track" role="progressbar" aria-label="Использованный бюджет" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="budget-progress"><span id="budget-fill"></span></div><p id="budget-hint"></p></div><div id="plan-errors" class="plan-errors" role="alert" hidden></div><button id="submit-plan" class="button button-primary button-full" type="button" disabled><span>Подписать распоряжения</span><svg class="icon"><use href="#i-arrow"/></svg></button><p id="sign-hint" class="sign-hint">Добавьте ещё 5 распоряжений</p><p class="portfolio-footnote">Порядок решений не влияет на результат.<br>Остаток бюджета не даёт бонуса к Score.</p></aside>
+          <section class="catalog" aria-labelledby="catalog-title"><div class="catalog-heading"><div><h2 id="catalog-title">Меры для города</h2><p id="measure-context" class="measure-context"></p></div><span id="catalog-count">14 мероприятий</span></div><div id="measure-view" class="measure-view" role="group" aria-label="Выбор мер"><button id="view-district-measures" type="button" aria-pressed="true">Под задачу района</button><button id="view-all-measures" type="button" aria-pressed="false">Все 14 мер</button></div><div id="category-tabs" class="category-tabs" role="group" aria-label="Направление мероприятий"></div><div id="measure-cards" class="measure-cards"></div></section>
+          <aside class="portfolio" aria-labelledby="portfolio-title"><div class="portfolio-top"><span class="eyebrow">ПАКЕТ РЕШЕНИЙ</span><span id="decision-count" class="count-badge">0 / 5</span></div><h2 id="portfolio-title">Ваши распоряжения</h2><p class="portfolio-intro">Пять возможностей изменить город.</p><div id="coverage-preview" class="coverage-preview" aria-label="Охват выбранной меры"><div class="coverage-heading"><strong>ОХВАТ МЕРЫ</strong><span id="coverage-label">Наведите на меру</span></div><div id="coverage-districts" class="coverage-districts"></div></div><div id="decision-slots" class="decision-slots"></div><div class="budget-block"><div class="budget-label"><span>Бюджет пакета</span><strong><span id="budget-used">0</span> <span class="budget-total">/ 100</span></strong></div><div class="budget-track" role="progressbar" aria-label="Использованный бюджет" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="budget-progress"><span id="budget-fill"></span></div><p id="budget-hint"></p></div><div id="plan-errors" class="plan-errors" role="alert" hidden></div><button id="submit-plan" class="button button-primary button-full" type="button" disabled><span>Подписать распоряжения</span><svg class="icon"><use href="#i-arrow"/></svg></button><p id="sign-hint" class="sign-hint">Добавьте ещё 5 распоряжений</p><p class="portfolio-footnote">Порядок решений не влияет на результат.<br>Остаток бюджета не даёт бонуса к Score.</p></aside>
         </div>
       </section>
 
       <section id="stage-report" class="stage" aria-labelledby="report-title" hidden>
-        <div class="report-heading"><div><p class="eyebrow">03 / ИТОГ ВАШЕГО УПРАВЛЕНИЯ</p><h1 id="report-title" class="page-title">Решения приняты.<br><em>Вот что изменилось.</em></h1></div><div class="report-actions"><button id="recommend-change" class="button button-primary" type="button"><svg class="icon"><use href="#i-spark"/></svg><span>Улучшить одно распоряжение</span></button><button id="compare-plan" class="button button-secondary" type="button"><svg class="icon"><use href="#i-spark"/></svg><span>Сравнить с оптимумом</span></button><button class="button button-secondary" type="button" data-stage="planner">Пересмотреть решения <svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
+        <div class="report-heading"><div><p class="eyebrow">03 / ИТОГ ВАШЕГО УПРАВЛЕНИЯ</p><h1 id="report-title" class="page-title">ГОРОД ПОСЛЕ <span>ВАШИХ РЕШЕНИЙ.</span></h1></div><div class="report-actions"><button id="recommend-change" class="button button-primary" type="button"><svg class="icon"><use href="#i-spark"/></svg><span>Улучшить одно распоряжение</span></button><button id="compare-plan" class="button button-secondary" type="button"><svg class="icon"><use href="#i-spark"/></svg><span>Сравнить с оптимумом</span></button><button class="button button-secondary" type="button" data-stage="planner">Пересмотреть решения <svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
         <div class="report-overview"><section class="score-card" aria-label="Итоговый Score"><div class="score-card-label">ASTANA QUALITY OF LIFE SCORE <span id="report-horizon">ЧЕРЕЗ 8 КВАРТАЛОВ</span></div><div class="score-main"><strong id="result-score">—</strong><span id="result-change" class="score-change"></span></div><div class="score-card-bottom"><span>До ваших решений <b id="result-base">—</b></span><span>Результат модели города</span></div></section><div class="report-stats"><div><span>Потрачено на город</span><strong id="result-cost">—</strong></div><div><span>Осталось в бюджете</span><strong id="result-remaining">—</strong></div><div><span>Показателей ниже 40</span><strong id="result-critical">—</strong></div></div></div>
         <div class="report-grid"><section class="report-panel"><div class="section-heading"><div><p class="eyebrow">ПОСЛЕДСТВИЯ ДЛЯ ГОРОДА</p><h2>Как изменились районы</h2></div></div><div id="district-chart"></div><div id="district-list"></div><div id="synergies" class="synergies"></div></section><section class="report-panel explanation-panel"><div class="advisor-heading"><span class="advisor-mark"><svg class="icon"><use href="#i-spark"/></svg></span><div><p class="eyebrow">ЗАПИСКА СОВЕТНИКА</p><h2>Смысл ваших решений</h2></div></div><p id="explanation-source" class="explanation-source"></p><div id="explanation" class="explanation"></div><div class="report-disclaimer">Это симуляция на синтетических данных. Она показывает последствия в заданной модели города.</div></section></div>
         <section class="advisor-help report-panel" aria-labelledby="advisor-help-title">

@@ -4,11 +4,14 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import explanation  # noqa: E402
 from server import Handler, _advice_scenario  # noqa: E402
 from simulator import simulate  # noqa: E402
 
@@ -106,6 +109,55 @@ class HumanAdviceContractTest(unittest.TestCase):
                          "Не хочу ухудшать Сарыарку")
         self.assertIn("one_change_district_2", json.loads(sent["input"])["candidates"])
         self.assertFalse(sent["store"])
+
+    def test_advisor_reads_openai_configuration_from_env_file(self):
+        response = {"output": [{"type": "message", "content": [{"type": "output_text",
+                    "text": json.dumps({"selected_option": "none",
+                                        "fact_ids": ["current_overview",
+                                                     "one_change_overview"]})}]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text("OPENAI_API_KEY=file-key\nOPENAI_MODEL=file-model\n",
+                                encoding="utf-8")
+            with patch("explanation._DOTENV_PATH", env_file), \
+                    patch.dict(os.environ, {}, clear=True), \
+                    patch("explanation._post_json", return_value=response) as mock_post:
+                answer = _advice_scenario(EXAMPLE, simulate(EXAMPLE),
+                                          "Почему варианты различаются?")
+        self.assertEqual(answer["advice"]["source"], "model")
+        self.assertEqual(answer["advice"]["provider"], "openai")
+        self.assertEqual(mock_post.call_args.args[2], "file-key")
+        self.assertEqual(mock_post.call_args.args[1]["model"], "file-model")
+
+    def test_advisor_uses_nvidia_sdk_with_env_file(self):
+        content = json.dumps({"selected_option": "one_change",
+                              "fact_ids": ["one_change_overview",
+                                           "one_change_district_2"]})
+        client = MagicMock()
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        sdk = ModuleType("openai")
+        sdk.OpenAI = MagicMock(return_value=client)
+        sdk.OpenAIError = type("FakeOpenAIError", (Exception,), {})
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text("NVIDIA_API_KEY=file-key\nNVIDIA_MODEL=file-model\n",
+                                encoding="utf-8")
+            with patch("explanation._DOTENV_PATH", env_file), \
+                    patch.dict(os.environ, {}, clear=True), \
+                    patch.dict(sys.modules, {"openai": sdk}), \
+                    patch("explanation._post_json") as openai_post:
+                answer = _advice_scenario(EXAMPLE, simulate(EXAMPLE),
+                                          "Как улучшить результат?")
+        self.assertEqual(answer["advice"]["source"], "model")
+        self.assertEqual(answer["advice"]["provider"], "nvidia")
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["base_url"],
+                         explanation._NVIDIA_API_BASE_URL)
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["api_key"], "file-key")
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["max_retries"], 0)
+        self.assertEqual(client.chat.completions.create.call_args.kwargs["model"],
+                         "file-model")
+        openai_post.assert_not_called()
 
     def test_invented_model_fact_id_falls_back_to_computed_facts(self):
         response = {"output": [{"type": "message", "content": [{"type": "output_text",
