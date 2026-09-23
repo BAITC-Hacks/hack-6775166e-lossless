@@ -1,7 +1,7 @@
 "use strict";
 
 const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize" };
-const state = { catalog: null, decisions: Array.from({ length: 5 }, () => ({ measure_id: "", district: null })) };
+const state = { catalog: null, decisions: Array.from({ length: 5 }, () => ({ measure_id: "", district: null })), currentResult: null, recommendation: null, revision: 0 };
 const $ = (id) => document.getElementById(id);
 const formatScore = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(2).replace(".", ",") : "—";
 const text = (tag, value, className) => {
@@ -130,7 +130,14 @@ function updateBudget() {
   $("budget-hint").textContent = used > 100 ? `Превышение бюджета на ${used - 100} ед. Сервер вернёт причину отказа.` : `Остаток ${100 - used} ед. не повышает Score.`;
 }
 
-function hideResult() { $("result-section").hidden = true; }
+function hideResult() {
+  state.currentResult = null;
+  state.recommendation = null;
+  state.revision += 1;
+  $("result-section").hidden = true;
+  $("comparison").hidden = true;
+  optimizerError("");
+}
 
 function optimizerError(message) {
   const host = $("optimizer-error");
@@ -139,6 +146,9 @@ function optimizerError(message) {
 }
 
 function showErrors(errors) {
+  state.currentResult = null;
+  state.recommendation = null;
+  $("comparison").hidden = true;
   $("result-section").hidden = false;
   $("valid-result").hidden = true;
   const host = $("result-errors");
@@ -207,6 +217,7 @@ function showResult(result) {
     return;
   }
   $("result-section").hidden = false;
+  $("comparison").hidden = true;
   $("result-errors").hidden = true;
   $("valid-result").hidden = false;
   const base = Number(result.base_score ?? state.catalog.base_score);
@@ -225,8 +236,64 @@ function showResult(result) {
   $("result-section").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function districtScore(result, name) { return Number(result.districts?.[name]?.score); }
+function districtScoreWithChange(result, name) {
+  const score = districtScore(result, name);
+  const baseline = Number(state.catalog?.districts?.[name]?.score);
+  return Number.isFinite(baseline) ? `${formatScore(score)} (${signed(score - baseline)})` : formatScore(score);
+}
+function affectedDistricts(result) {
+  return districts().filter((name) => Object.values(result.deltas?.[name] || {}).some((value) => Number(value) !== 0));
+}
+function signed(value) { return `${value >= 0 ? "+" : ""}${formatScore(value)}`; }
+
+function renderComparison(current, proposed) {
+  const gap = Number(proposed.score) - Number(current.score);
+  $("comparison-gap").textContent = `${signed(gap)} к вашему Score`;
+  const summary = $("comparison-summary");
+  summary.replaceChildren();
+  for (const [label, result] of [["Ваш план", current], ["Рекомендация", proposed]]) {
+    const card = text("div", "", "comparison-stat");
+    card.append(text("small", label), text("strong", formatScore(result.score)), text("span", `Стоимость ${result.cost} / 100 · затронуто районов: ${affectedDistricts(result).length}`));
+    summary.append(card);
+  }
+  const rows = $("comparison-districts");
+  rows.replaceChildren();
+  const userBetter = [];
+  const proposedBetter = [];
+  districts().forEach((name) => {
+    const first = districtScore(current, name);
+    const second = districtScore(proposed, name);
+    if (!Number.isFinite(first) || !Number.isFinite(second)) return;
+    const difference = second - first;
+    if (difference > 0.00001) proposedBetter.push(name);
+    if (difference < -0.00001) userBetter.push(name);
+    const row = document.createElement("tr");
+    row.append(text("th", name), text("td", districtScoreWithChange(current, name)), text("td", districtScoreWithChange(proposed, name)));
+    const delta = text("td", signed(difference), difference < 0 ? "comparison-negative" : "comparison-positive");
+    row.append(delta);
+    rows.append(row);
+  });
+  const tradeoffs = $("comparison-tradeoffs");
+  tradeoffs.replaceChildren();
+  const costDifference = Number(proposed.cost) - Number(current.cost);
+  const costMessage = costDifference === 0 ? "Оба плана тратят одинаковый бюджет." : `Рекомендация тратит на ${Math.abs(costDifference)} ед. ${costDifference > 0 ? "больше" : "меньше"}.`;
+  tradeoffs.append(text("p", costMessage));
+  tradeoffs.append(text("p", proposedBetter.length ? `Выше районный балл: ${proposedBetter.join(", ")}.` : "Нет районов, где рекомендация повышает районный балл относительно вашего плана."));
+  tradeoffs.append(text("p", userBetter.length ? `Ваш план сохраняет более высокий районный балл: ${userBetter.join(", ")}.` : "Нет районов, где ваш план даёт более высокий районный балл."));
+  if (Number.isFinite(Number(current.critical_count)) && Number.isFinite(Number(proposed.critical_count))) {
+    tradeoffs.append(text("p", `Критических показателей: ваш план — ${current.critical_count}, рекомендация — ${proposed.critical_count}.`));
+  }
+  const userMeasures = state.decisions.map(({ measure_id, district }) => `${measure_id}${district ? ` / ${district}` : " / город"}`).join(" · ");
+  const proposedMeasures = proposed.decisions.map(({ measure_id, district }) => `${measure_id}${district ? ` / ${district}` : " / город"}`).join(" · ");
+  $("comparison-measures").textContent = `Ваш план: ${userMeasures}. Рекомендация: ${proposedMeasures}.`;
+  $("comparison").hidden = false;
+  $("comparison").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 async function calculate() {
   const button = $("submit-plan");
+  const revision = state.revision;
   button.disabled = true;
   $("suggest-plan").disabled = true;
   optimizerError("");
@@ -236,13 +303,20 @@ async function calculate() {
     const response = await fetch(API.simulate, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions }) });
     const result = await response.json();
     if (!response.ok && !Array.isArray(result.errors)) throw new Error(`Сервер вернул HTTP ${response.status}`);
+    if (revision !== state.revision) return;
     showResult(result);
+    state.currentResult = result.valid && Number.isFinite(Number(result.score)) ? result : null;
   } catch (error) { showErrors([`Не удалось связаться с сервером: ${error.message}`]); }
   finally { button.disabled = false; $("suggest-plan").disabled = false; button.firstElementChild.textContent = "Рассчитать сценарий"; }
 }
 
 async function suggestPlan() {
+  if (!state.currentResult?.valid) {
+    optimizerError("Сначала рассчитайте корректный ручной план, чтобы сравнить его с рекомендацией.");
+    return;
+  }
   const button = $("suggest-plan");
+  const revision = state.revision;
   button.disabled = true;
   $("submit-plan").disabled = true;
   button.firstElementChild.textContent = "Ищем план…";
@@ -263,17 +337,29 @@ async function suggestPlan() {
       if (!isCity(measure) && !districts().includes(district)) throw new Error("сервер не указал район для одной из мер");
       return { measure_id: measure.id, district };
     });
-    state.decisions = proposed;
-    renderSlots();
-    updateBudget();
-    showResult(result);
+    if (revision !== state.revision || !state.currentResult?.valid) throw new Error("ручной план изменился во время поиска");
+    state.recommendation = { ...result, decisions: proposed };
+    renderComparison(state.currentResult, state.recommendation);
   } catch (error) {
-    optimizerError(`Не удалось предложить план: ${error.message}. Ваш ручной выбор сохранён.`);
+    optimizerError(`Не удалось сравнить планы: ${error.message}. Ваш ручной выбор сохранён.`);
   } finally {
     button.disabled = false;
     $("submit-plan").disabled = false;
-    button.firstElementChild.textContent = "Предложить план";
+    button.firstElementChild.textContent = "Сравнить с рекомендацией";
   }
+}
+
+function adoptPlan() {
+  if (!state.recommendation?.valid) return;
+  const result = state.recommendation;
+  state.decisions = result.decisions.map(({ measure_id, district }) => ({ measure_id, district }));
+  state.currentResult = result;
+  state.recommendation = null;
+  state.revision += 1;
+  renderSlots();
+  updateBudget();
+  optimizerError("");
+  showResult(result);
 }
 
 async function start() {
@@ -291,6 +377,7 @@ async function start() {
     $("app").hidden = false;
     $("submit-plan").addEventListener("click", calculate);
     $("suggest-plan").addEventListener("click", suggestPlan);
+    $("adopt-plan").addEventListener("click", adoptPlan);
   } catch (error) {
     $("loading").hidden = true;
     $("app-error").textContent = `Не удалось загрузить исходные данные: ${error.message}. Обновите страницу после запуска сервера.`;
