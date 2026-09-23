@@ -34,9 +34,13 @@ function icon(name) {
 function announce(message) { $("announcer").textContent = message; }
 function indicatorName(key) { return state.catalog.indicators?.[key]?.name || key; }
 function notice(message = "", error = false) {
-  $("planner-notice").textContent = message;
-  $("planner-notice").hidden = !message;
-  $("planner-notice").classList.toggle("is-error", error);
+  const active = state.stage === "report" ? "report-notice" : "planner-notice";
+  ["planner-notice", "report-notice"].forEach((id) => {
+    const host = $(id);
+    host.textContent = id === active ? message : "";
+    host.hidden = !host.textContent;
+    host.classList.toggle("is-error", id === active && error && Boolean(message));
+  });
 }
 function syncNavigation() {
   document.querySelectorAll("[data-stage]").forEach((button) => {
@@ -51,6 +55,7 @@ function syncNavigation() {
 }
 function setStage(stage) {
   if (!state.catalog || !["briefing", "planner", "report"].includes(stage) || stage === "report" && !state.result) return;
+  if (stage !== state.stage) notice("");
   state.stage = stage;
   ["briefing", "planner", "report"].forEach((name) => { $(`stage-${name}`).hidden = name !== stage; });
   syncNavigation();
@@ -502,7 +507,6 @@ async function suggestPlan() {
     showSuggestion(result, decisions);
   } catch (error) {
     console.error("Proposal request failed", error);
-    if (state.stage === "report") setStage("planner");
     notice("Советник сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
   } finally { setBusy(null); }
 }
@@ -510,6 +514,7 @@ async function recommendChange() {
   if (state.busy || !state.result) return;
   const revision = state.revision;
   const decisions = state.decisions.map((item) => ({ ...item }));
+  notice("");
   setBusy("recommend"); announce("Советник ищет лучшую замену одного распоряжения.");
   try {
     const answer = await requestJson(API.recommendChange, {
