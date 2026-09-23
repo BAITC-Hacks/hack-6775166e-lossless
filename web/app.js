@@ -8,7 +8,7 @@ const VERIFICATION_DECISIONS = [
   { measure_id: "M10", district: "Нура" }, { measure_id: "M12", district: null },
   { measure_id: "M5", district: "Сарыарка" }
 ];
-const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, diorama: null, slotPreviewIndex: null, drag: null };
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, diorama: null, dialogDiorama: null, dialogCommitted: false, slotPreviewIndex: null, drag: null };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
@@ -104,7 +104,7 @@ function validate(decisions, requireFive = false) {
   Object.entries(counts).forEach(([category, count]) => {
     if (count > 2) errors.push(`В направлении «${category}» уже две меры. Выберите другое направление.`);
   });
-  if (costOf(decisions) > budget()) errors.push(`Не хватает ${format(costOf(decisions) - budget(), 0)} ед. бюджета. Замените или уберите другое распоряжение.`);
+  if (costOf(decisions) > budget()) errors.push(`Не хватает ${format(costOf(decisions) - budget(), 0)} ед. бюджета. Замените или уберите другую меру.`);
   // Catalogue conflict metadata is optional; the server always validates again.
   for (const conflict of state.catalog?.conflicts || []) {
     if (!Array.isArray(conflict.measures) || conflict.measures.length !== 2) continue;
@@ -144,6 +144,7 @@ function syncScene() {
   if (!state.catalog) return;
   const focus = state.pending?.measureId || state.hoverMeasureId;
   const measure = focus && measureById(focus);
+  const targetMeasure = state.drag?.started ? state.drag.measure : state.hoverMeasureId ? measureById(state.hoverMeasureId) : null;
   const affected = measure ? (city(measure) ? districtNames() : [state.pending?.district || state.selectedDistrict].filter(Boolean)) : [];
   $("coverage-label").textContent = measure ? `${measure.id} · ${city(measure) ? "весь город" : state.pending?.district || state.selectedDistrict}` : "Перетащите меру";
   for (const hostId of ["coverage-districts", "mobile-drop-targets"]) {
@@ -163,8 +164,15 @@ function syncScene() {
     }
     [...host.children].forEach((chip) => {
       const name = chip.dataset.dropDistrict;
+      const target = name ? { kind: "district", name } : { kind: "city", name: "Весь город" };
+      const error = targetMeasure ? dropError(targetMeasure, target) : null;
+      const eligible = targetMeasure ? !error : null;
       chip.classList.toggle("is-affected", name ? affected.includes(name) : Boolean(measure && city(measure)));
       chip.classList.toggle("is-selected", Boolean(name && name === state.selectedDistrict));
+      chip.classList.toggle("is-drop-eligible", eligible === true);
+      chip.classList.toggle("is-drop-disabled", eligible === false);
+      if (targetMeasure) chip.title = eligible ? `Можно назначить ${targetMeasure.id}: ${target.name}` : error;
+      else chip.removeAttribute("title");
     });
   }
   syncInitiativePreview();
@@ -174,7 +182,7 @@ function syncScene() {
       districts: state.catalog.districts,
       selected: state.selectedDistrict,
       affected,
-      decisions: state.decisions,
+      decisions: state.stage === "report" && state.resultView === "before" ? [] : state.decisions,
       measures: state.catalog.measures,
       resultDistricts: state.result?.districts || null,
       mode: state.stage === "report" && state.resultView === "after" && state.result ? "result" : "baseline"
@@ -183,6 +191,14 @@ function syncScene() {
 }
 function syncInitiativePreview() {
   if (!state.catalog) return;
+  if (state.stage === "report" && state.resultView === "before") {
+    $("initiative-caption").textContent = "Исходное состояние";
+    try { state.diorama?.update({ measure: null, district: null, mode: "plan" }); }
+    catch (error) { console.error("Measure scene update failed", error); }
+    try { state.scene?.setInitiativePreview?.(null); }
+    catch (error) { console.error("City initiative preview failed", error); }
+    return;
+  }
   const drag = state.drag?.started ? state.drag : null;
   const slot = state.slotPreviewIndex !== null ? state.decisions[state.slotPreviewIndex] : null;
   const latest = state.decisions[state.decisions.length - 1];
@@ -268,7 +284,7 @@ function selectDistrict(name, restoreFocus = false) {
   if (!state.catalog?.districts?.[name]) return;
   state.selectedDistrict = name;
   renderDistrictRail(); renderInspector(); syncScene();
-  if (state.stage === "planner") renderMeasures();
+  if (state.stage === "planner" && !state.pending) keepAnchorPosition($("measure-view"), renderMeasures);
   if (restoreFocus) $("district-cards").querySelector(`[data-district="${name}"]`)?.focus({ preventScroll: true });
   if (state.stage === "briefing" && !state.pending && window.matchMedia("(max-width: 850px)").matches) requestAnimationFrame(() => {
     const title = $("district-inspector-title");
@@ -637,10 +653,23 @@ function updatePending() {
   validation.classList.toggle("is-neutral", errors.length === 1 && errors[0] === "Выберите район для меры.");
   $("confirm-measure").disabled = errors.length > 0 || locked();
 }
+function updateDialogDiorama() {
+  if (!state.pending) return;
+  const measure = measureById(state.pending.measureId);
+  const host = $("dialog-measure-scene");
+  if (!state.dialogDiorama && typeof window.createInitiativeDiorama === "function") {
+    try { state.dialogDiorama = window.createInitiativeDiorama(host); }
+    catch (error) { console.error("Dialog measure scene unavailable", error); }
+  }
+  if (!state.dialogDiorama) { host.textContent = "Предпросмотр меры недоступен."; return; }
+  try { state.dialogDiorama.update({ measure, district: city(measure) ? null : state.pending.district, mode: "preview" }); }
+  catch (error) { console.error("Dialog measure scene update failed", error); }
+}
 function openMeasure(measureId, editingIndex = null) {
   if (locked()) return;
   const measure = measureById(measureId);
   if (!measure) return;
+  state.dialogCommitted = false;
   state.pending = { measureId, editingIndex, district: city(measure) ? null : editingIndex !== null ? state.decisions[editingIndex].district : state.selectedDistrict };
   syncScene();
   $("measure-category").textContent = `${measure.id} / ${categoryLabels[measure.category] || measure.category}`;
@@ -670,16 +699,17 @@ function openMeasure(measureId, editingIndex = null) {
     const input = document.createElement("input");
     input.type = "radio"; input.name = "measure-district"; input.value = name;
     input.checked = state.pending.district === name;
-    input.addEventListener("change", () => { state.pending.district = name; selectDistrict(name); updatePending(); syncScene(); });
+    input.addEventListener("change", () => { state.pending.district = name; selectDistrict(name); updatePending(); syncScene(); updateDialogDiorama(); });
     label.append(input, node("span", name), node("small", format(state.catalog.districts[name].score)));
     options.append(label);
   });
   $("confirm-measure").replaceChildren(document.createTextNode(editingIndex === null ? "Включить в пакет" : "Сохранить район"), icon(editingIndex === null ? "plus" : "check"));
   updatePending();
   $("measure-dialog").showModal();
+  updateDialogDiorama();
   syncScene();
   const focusTarget = options.querySelector("input:checked") || options.querySelector("input") || $("confirm-measure");
-  if (!focusTarget.disabled) focusTarget.focus();
+  if (!focusTarget.disabled) focusTarget.focus({ preventScroll: true });
 }
 function confirmMeasure() {
   if (!state.pending || locked()) return;
@@ -687,6 +717,7 @@ function confirmMeasure() {
   if (validate(decisions).length) { updatePending(); return; }
   const id = state.pending.measureId;
   const slotIndex = decisions.findIndex((decision) => decision.measure_id === id);
+  state.dialogCommitted = true;
   $("measure-dialog").close();
   setDecisions(decisions, `Мера ${id} в плане. Выбрано ${decisions.length} из пяти.`);
   const focusTarget = $("decision-slots").children[slotIndex]?.querySelector("button:not(:disabled)");
@@ -867,7 +898,7 @@ function showSuggestion(result, decisions, explanation = null, removed = [], add
     const label = (item) => `${item.measure_id}/${item.district || "город"}`;
     $("suggestion-swap").textContent = improved
       ? `${removed.map(label).join(", ")} → ${added.map(label).join(", ")}`
-      : "Улучшение заменой одного распоряжения не найдено";
+      : "Улучшение заменой одной меры не найдено";
     $("suggestion-ai-text").textContent = explanation.text || "Совет недоступен.";
     $("suggestion-ai-source").textContent = explanation.source === "model"
       ? `AI-разбор проверенных расчётов · ${explanation.provider || "модель"}`
@@ -1100,5 +1131,12 @@ document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener(
   const rect = dialog.getBoundingClientRect();
   if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
 }));
-$("measure-dialog").addEventListener("close", () => { state.pending = null; state.hoverMeasureId = null; syncScene(); });
+$("measure-dialog").addEventListener("close", () => {
+  const rerender = !state.dialogCommitted && state.stage === "planner";
+  state.dialogDiorama?.destroy(); state.dialogDiorama = null;
+  state.dialogCommitted = false;
+  state.pending = null; state.hoverMeasureId = null;
+  if (rerender) keepAnchorPosition($("measure-view"), renderMeasures);
+  syncScene();
+});
 start();
