@@ -692,6 +692,7 @@ async function start() {
 document.querySelectorAll("[data-stage]").forEach((button) => button.addEventListener("click", () => setStage(button.dataset.stage)));
 function openPlannerAtCatalog(view) {
   state.measureView = view;
+  state.category = "Все";
   setStage("planner");
   renderMeasures();
   requestAnimationFrame(() => {
