@@ -125,6 +125,18 @@ class HumanAdviceContractTest(unittest.TestCase):
                          "Не хочу ухудшать Сарыарку")
         self.assertIn("one_change_district_2", json.loads(sent["input"])["candidates"])
         self.assertFalse(sent["store"])
+        output_format = sent["text"]["format"]
+        self.assertEqual(output_format["type"], "json_schema")
+        self.assertTrue(output_format["strict"])
+        schema = output_format["schema"]
+        self.assertEqual(schema["required"], ["selected_option", "fact_ids"])
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(schema["properties"]["selected_option"]["enum"],
+                         ["current", "one_change", "optimum", "none"])
+        fact_ids = schema["properties"]["fact_ids"]
+        self.assertEqual(fact_ids["items"]["enum"],
+                         sorted(json.loads(sent["input"])["candidates"]))
+        self.assertEqual((fact_ids["minItems"], fact_ids["maxItems"]), (2, 5))
 
     def test_advisor_reads_openai_configuration_from_env_file(self):
         response = {"output": [{"type": "message", "content": [{"type": "output_text",

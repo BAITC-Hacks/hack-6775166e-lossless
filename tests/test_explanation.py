@@ -214,6 +214,17 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(sent["model"], "test-model")
         self.assertIn("strength_indicator", sent["input"])
         self.assertFalse(sent["store"])
+        output_format = sent["text"]["format"]
+        self.assertEqual(output_format["type"], "json_schema")
+        self.assertTrue(output_format["strict"])
+        schema = output_format["schema"]
+        self.assertEqual(schema["required"], ["strengths", "risks", "tradeoffs"])
+        self.assertFalse(schema["additionalProperties"])
+        candidates = json.loads(sent["input"])["candidates"]
+        for section in candidates:
+            selected_ids = schema["properties"][section]
+            self.assertEqual(selected_ids["items"]["enum"], sorted(candidates[section]))
+            self.assertEqual((selected_ids["minItems"], selected_ids["maxItems"]), (1, 2))
 
     def test_fabricated_number_is_not_displayed(self):
         response = {"output": [{"type": "message", "content": [
@@ -337,6 +348,36 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(answer["source"], "model")
         self.assertIn(f"Районный балл Сарыарка снизится на {explanation_module._fmt(loss)}.",
                       answer["text"])
+
+    def test_openai_comparison_schema_restricts_ids_and_keeps_validation(self):
+        current, proposed, removed, added = saryarka_swap()
+        chosen = {"strengths": ["score_change"], "risks": ["weakest"],
+                  "tradeoffs": ["measure_change"]}
+        response = {"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": json.dumps(chosen)}]}]}
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "gpt-4o-mini"}), \
+                patch("src.explanation._post_json", return_value=response) as mock_post:
+            answer = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(answer["source"], "model")
+        payload = mock_post.call_args.args[1]
+        schema = payload["text"]["format"]["schema"]
+        candidates = json.loads(payload["input"])["candidates"]
+        self.assertEqual(schema["properties"]["strengths"]["items"]["enum"],
+                         sorted(candidates["strengths"]))
+        self.assertEqual(schema["properties"]["risks"]["items"]["enum"],
+                         sorted(candidates["risks"]))
+        self.assertNotIn("S1", schema["properties"]["strengths"]["items"]["enum"])
+        self.assertNotIn("T2", schema["properties"]["strengths"]["items"]["enum"])
+        self.assertIn("Районный балл Сарыарка снизится на 1,21", answer["text"])
+
+        invalid = {"strengths": ["S1", "T2"], "risks": ["weakest"],
+                   "tradeoffs": ["measure_change"]}
+        response["output"][0]["content"][0]["text"] = json.dumps(invalid)
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "gpt-4o-mini"}), \
+                patch("src.explanation._post_json", return_value=response):
+            fallback = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(fallback["source"], "computed_facts")
+        self.assertNotIn("S1", fallback["text"])
 
     def test_markdown_fenced_json_still_requires_verified_fact_ids(self):
         chosen = {"strengths": ["strength_indicator"], "risks": ["risk_negative"],

@@ -188,12 +188,29 @@ def _post_json(url, payload, api_key):
         return json.load(response)
 
 
+def _structured_text_format(name, properties):
+    """Constrain OpenAI Responses output to the supplied verified IDs."""
+    return {"format": {
+        "type": "json_schema", "name": name, "strict": True,
+        "schema": {
+            "type": "object", "properties": properties,
+            "required": list(properties), "additionalProperties": False,
+        },
+    }}
+
+
 def _select_with_openai(facts, api_key, model, evidence):
+    properties = {
+        section: {"type": "array", "items": {"type": "string", "enum": sorted(candidates)},
+                  "minItems": 1, "maxItems": 2}
+        for section, candidates in facts.items()
+    }
     payload = {
         "model": model,
         "instructions": _INSTRUCTIONS,
         "input": json.dumps({"candidates": facts, "calculated_evidence": evidence},
                             ensure_ascii=False, sort_keys=True),
+        "text": _structured_text_format("city_fact_selection", properties),
         "store": False,
     }
     body = _post_json(_OPENAI_API_URL, payload, api_key)
@@ -347,7 +364,8 @@ _ADVISOR_INSTRUCTIONS = (
     "вариант с отрицательной разницей для этого района. Верни только JSON-объект "
     "с полями selected_option и fact_ids. selected_option: current, one_change, "
     "optimum или none. fact_ids: от 2 до 5 разных ID из candidates, которые прямо "
-    "отвечают на вопрос. Не добавляй текст, числа или другие поля."
+    "отвечают на вопрос. Если selected_option не none, включи минимум один fact_id "
+    "с префиксом выбранного варианта. Не добавляй текст, числа или другие поля."
 )
 
 
@@ -422,9 +440,17 @@ def _advisor_model_selection(question, facts, api_key, model, provider):
     user_input = json.dumps({"question": question, "candidates": facts},
                             ensure_ascii=False, sort_keys=True)
     if provider == "openai":
+        properties = {
+            "selected_option": {"type": "string", "enum":
+                                ["current", "one_change", "optimum", "none"]},
+            "fact_ids": {"type": "array", "items": {"type": "string", "enum": sorted(facts)},
+                         "minItems": 2, "maxItems": 5},
+        }
         body = _post_json(_OPENAI_API_URL, {
             "model": model, "instructions": _ADVISOR_INSTRUCTIONS,
-            "input": user_input, "store": False,
+            "input": user_input,
+            "text": _structured_text_format("city_advisor_selection", properties),
+            "store": False,
         }, api_key)
         output = "".join(
             block.get("text", "")
