@@ -118,6 +118,7 @@
     let yaw = -0.34, pitch = 0.89, zoom = 1;
     let width = 0, height = 0, pixelRatio = 1;
     let projectedDistricts = [];
+    let projectedBuildings = [];
     let hovered = null;
     let drag = null;
     let animationFrame = 0;
@@ -257,6 +258,13 @@
         ctx.fillStyle = active ? "#c9fff2" : "#d4e8c3";
         ctx.fillRect(c.x - 1.2, c.y - 1.2, 2.4, 2.4);
       }
+      return [
+        roof,
+        [floor[0], floor[1], roof[1], roof[0]],
+        [floor[1], floor[2], roof[2], roof[1]],
+        [floor[2], floor[3], roof[3], roof[2]],
+        [floor[3], floor[0], roof[0], roof[3]]
+      ];
     }
 
     function refreshLabels() {
@@ -290,6 +298,7 @@
       drawGrid();
       drawRoads();
       projectedDistricts = [];
+      projectedBuildings = [];
       const scores = data.mode === "result" && data.resultDistricts ? data.resultDistricts : data.districts;
       const scored = SHAPES.map((shape) => ({ name: shape.name, score: scores?.[shape.name]?.score }))
         .filter((item) => finite(item.score));
@@ -307,7 +316,10 @@
         shape.buildings
           .slice()
           .sort((a, b) => project(a.x, 0, a.z).depth - project(b.x, 0, b.z).depth)
-          .forEach((building) => drawBuilding(building, active, affected, progress));
+          .forEach((building) => projectedBuildings.push({
+            name: shape.name,
+            faces: drawBuilding(building, active, affected, progress)
+          }));
       });
       refreshLabels();
       if (progress < 1) animationFrame = requestAnimationFrame(draw);
@@ -338,6 +350,10 @@
     }
 
     function hitTest(x, y) {
+      for (let i = projectedBuildings.length - 1; i >= 0; i--) {
+        const building = projectedBuildings[i];
+        if (building.faces.some((face) => pointInScreenPolygon(x, y, face))) return building.name;
+      }
       for (let i = projectedDistricts.length - 1; i >= 0; i--) {
         const district = projectedDistricts[i];
         if (pointInScreenPolygon(x, y, district.points)) return district.name;
