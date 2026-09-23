@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from src import explanation
 from src.explanation import explain, explain_comparison, model_settings
+from src.simulator import simulate
 
 
 RESULT = {
@@ -31,6 +32,19 @@ RESULT = {
     "applied_synergies": [{"measures": ["M10", "M12"], "district": "Нура", "indicator": "B1", "bonus": 2}],
     "critical_count": 1,
 }
+
+
+def saryarka_swap():
+    decisions = [
+        {"measure_id": "M7", "district": "Нура"},
+        {"measure_id": "M8", "district": "Нура"},
+        {"measure_id": "M10", "district": "Нура"},
+        {"measure_id": "M12", "district": None},
+        {"measure_id": "M5", "district": "Сарыарка"},
+    ]
+    removed = [decisions[-1]]
+    added = [{"measure_id": "M3", "district": "Нура"}]
+    return simulate(decisions), simulate(decisions[:-1] + added), removed, added
 
 
 class FakeResponse:
@@ -146,8 +160,20 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(set(schema["required"]), {"strengths", "risks", "tradeoffs"})
         self.assertIn("strength_indicator", schema["properties"]["strengths"]["items"]["enum"])
         mock_open.assert_called_once()
+        self.assertEqual(mock_open.call_args.kwargs["timeout"], 20)
         self.assertIn("strength_indicator", sent["input"])
         self.assertFalse(sent["store"])
+        output_format = sent["text"]["format"]
+        self.assertEqual(output_format["type"], "json_schema")
+        self.assertTrue(output_format["strict"])
+        schema = output_format["schema"]
+        self.assertEqual(schema["required"], ["strengths", "risks", "tradeoffs"])
+        self.assertFalse(schema["additionalProperties"])
+        candidates = json.loads(sent["input"])["candidates"]
+        for section in candidates:
+            selected_ids = schema["properties"][section]
+            self.assertEqual(selected_ids["items"]["enum"], sorted(candidates[section]))
+            self.assertEqual((selected_ids["minItems"], selected_ids["maxItems"]), (1, 2))
 
     def test_configured_gpt56_sol_uses_bounded_fact_selection(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "gpt-5.6-sol"}), \
@@ -187,7 +213,7 @@ class ExplanationTests(unittest.TestCase):
         mock_open.assert_not_called()
         self.assertEqual(sdk.OpenAI.call_args.kwargs["base_url"],
                          "https://integrate.api.nvidia.com/v1")
-        self.assertEqual(sdk.OpenAI.call_args.kwargs["timeout"], 8)
+        self.assertEqual(sdk.OpenAI.call_args.kwargs["timeout"], 45)
         self.assertEqual(sdk.OpenAI.call_args.kwargs["max_retries"], 0)
         sent = client.chat.completions.create.call_args.kwargs
         self.assertEqual(sent["model"], "explicit/model-id")
@@ -262,6 +288,62 @@ class ExplanationTests(unittest.TestCase):
                                         [{"measure_id": "M3", "district": "Нура"}])
         self.assertEqual(answer["source"], "computed_facts")
         self.assertIn("56,54 до 57,21", answer["text"])
+
+    def test_comparison_offline_always_shows_saryarka_loss(self):
+        current, proposed, removed, added = saryarka_swap()
+        self.assertTrue(current["valid"] and proposed["valid"])
+        loss = current["districts"]["Сарыарка"]["score"] - proposed["districts"]["Сарыарка"]["score"]
+        self.assertGreater(loss, 0)
+        self.assertEqual(explanation._fmt(loss), "1,21")
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "", "NVIDIA_MODEL": "",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}):
+            answer = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(answer["source"], "computed_facts")
+        self.assertIn(f"Районный балл Сарыарка снизится на {explanation._fmt(loss)}.",
+                      answer["text"])
+
+    def test_comparison_model_selection_cannot_hide_saryarka_loss(self):
+        current, proposed, removed, added = saryarka_swap()
+        loss = current["districts"]["Сарыарка"]["score"] - proposed["districts"]["Сарыарка"]["score"]
+        chosen = {"strengths": ["score_change"], "risks": ["weakest"],
+                  "tradeoffs": ["budget"]}
+        sdk, _ = fake_nvidia_sdk(json.dumps(chosen))
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "test-key", "NVIDIA_MODEL": "test-model"}), \
+                patch.dict(sys.modules, {"openai": sdk}):
+            answer = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(answer["source"], "model")
+        self.assertIn(f"Районный балл Сарыарка снизится на {explanation._fmt(loss)}.",
+                      answer["text"])
+
+    def test_openai_comparison_schema_restricts_ids_and_keeps_validation(self):
+        current, proposed, removed, added = saryarka_swap()
+        chosen = {"strengths": ["score_change"], "risks": ["weakest"],
+                  "tradeoffs": ["measure_change"]}
+        response = {"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": json.dumps(chosen)}]}]}
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "gpt-4o-mini"}), \
+                patch("src.explanation._post_json", return_value=response) as mock_post:
+            answer = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(answer["source"], "model")
+        payload = mock_post.call_args.args[1]
+        schema = payload["text"]["format"]["schema"]
+        candidates = json.loads(payload["input"])["candidates"]
+        self.assertEqual(schema["properties"]["strengths"]["items"]["enum"],
+                         sorted(candidates["strengths"]))
+        self.assertEqual(schema["properties"]["risks"]["items"]["enum"],
+                         sorted(candidates["risks"]))
+        self.assertNotIn("S1", schema["properties"]["strengths"]["items"]["enum"])
+        self.assertNotIn("T2", schema["properties"]["strengths"]["items"]["enum"])
+        self.assertIn("Районный балл Сарыарка снизится на 1,21", answer["text"])
+
+        invalid = {"strengths": ["S1", "T2"], "risks": ["weakest"],
+                   "tradeoffs": ["measure_change"]}
+        response["output"][0]["content"][0]["text"] = json.dumps(invalid)
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "gpt-4o-mini"}), \
+                patch("src.explanation._post_json", return_value=response):
+            fallback = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(fallback["source"], "computed_facts")
+        self.assertNotIn("S1", fallback["text"])
 
     def test_markdown_fenced_json_still_requires_verified_fact_ids(self):
         chosen = {"strengths": ["strength_indicator"], "risks": ["risk_negative"],
@@ -617,6 +699,58 @@ class ExplanationTests(unittest.TestCase):
             results = json.loads(result_output.getvalue())["results"]
             self.assertTrue(all(item["provider"] == "openai" for item in results))
             self.assertEqual(results[1]["proposed_score"], 57.20556)
+
+    def test_advisor_rejects_incomplete_refused_and_interrupted_responses(self):
+        from http.client import IncompleteRead
+
+        options = [{"id": oid, "label": oid, "result": deepcopy(RESULT), "decisions": []}
+                   for oid in ("current", "one_change", "optimum")]
+        output = json.dumps({"selected_option": "current",
+                             "fact_ids": ["current_overview", "one_change_overview"]})
+        incomplete = self.openai_response(output)
+        incomplete["status"] = "incomplete"
+        refusal = self.openai_response(output)
+        refusal["output"][0]["content"].append({"type": "refusal", "refusal": "No"})
+        cases = [incomplete, refusal, {"output": []}, IncompleteRead(b"secret", 100)]
+        for response in cases:
+            transport = ({"side_effect": response} if isinstance(response, Exception)
+                         else {"return_value": FakeResponse(response)})
+            with self.subTest(response=response), patch.dict(os.environ, {
+                    "OPENAI_API_KEY": "secret-key", "OPENAI_MODEL": "test-model"}), \
+                    patch("src.explanation.request.urlopen", **transport) as mock_open:
+                answer = explanation.advise("Как отличаются варианты?", options)
+            self.assertEqual(answer["source"], "computed_facts")
+            self.assertEqual(answer["reason"], "model_unavailable")
+            self.assertEqual(answer["selected_option"], "none")
+            self.assertNotIn("secret", json.dumps(answer))
+            mock_open.assert_called_once()
+
+    def test_advisor_selection_rejects_duplicate_keys_and_bad_ids(self):
+        facts = {"current_overview": "fact", "one_change_overview": "fact"}
+        cases = [None, '[]',
+                 '{"selected_option":"none","selected_option":"current",'
+                 '"fact_ids":["current_overview","one_change_overview"]}',
+                 json.dumps({"selected_option": "none", "fact_ids": [{}, "current_overview"]}),
+                 json.dumps({"selected_option": "current", "fact_ids": ["unknown", "current_overview"]})]
+        for output in cases:
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                explanation._validate_advice_selection(output, facts)
+
+    def test_advisor_gpt56_sol_has_bounded_dynamic_selection(self):
+        facts = {"current_overview": "fact", "one_change_overview": "fact"}
+        selected = {"selected_option": "none", "fact_ids": list(facts)}
+        with patch("src.explanation.request.urlopen", return_value=FakeResponse(
+                self.openai_response(json.dumps(selected)))) as transport:
+            answer = explanation._advisor_model_selection(
+                "Какая разница?", facts, "test-key", "gpt-5.6-sol", "openai")
+        self.assertEqual(answer, ("none", list(facts)))
+        payload = json.loads(transport.call_args.args[0].data)
+        self.assertEqual(payload["max_output_tokens"], 512)
+        self.assertEqual(payload["reasoning"], {"effort": "none"})
+        self.assertFalse(payload["store"])
+        self.assertEqual(transport.call_args.kwargs["timeout"], 20)
+        schema = payload["text"]["format"]["schema"]
+        self.assertEqual(schema["properties"]["fact_ids"]["items"]["enum"], sorted(facts))
 
 if __name__ == "__main__":
     unittest.main()

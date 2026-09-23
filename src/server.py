@@ -64,7 +64,7 @@ def _optimal_scenario():
     return decisions, checked
 
 
-def _one_change_scenario(decisions, current):
+def _one_change_scenario(decisions, current, include_explanation=True):
     """Compare a user plan with its best valid one-decision patch."""
     payload = _optimizer_payload()
     district_names = tuple(payload["districts"])
@@ -85,11 +85,63 @@ def _one_change_scenario(decisions, current):
     added = [{"measure_id": item["id"],
               "district": None if item["district"] is None
               else district_names[item["district"]]} for item in found["added"]]
-    from explanation import explain_comparison
-    return {"valid": True, "current": current, "proposed": proposed,
+    answer = {"valid": True, "current": current, "proposed": proposed,
             "decisions": proposed_decisions, "removed": removed, "added": added,
-            "score_delta": found["score_delta"], "cost_delta": found["cost_delta"],
-            "explanation": explain_comparison(current, proposed, removed, added)}
+            "score_delta": found["score_delta"], "cost_delta": found["cost_delta"]}
+    if include_explanation:
+        from explanation import explain_comparison
+        answer["explanation"] = explain_comparison(current, proposed, removed, added)
+    return answer
+
+
+def _option_tradeoff(current, proposed):
+    """Summarize a computed alternative without giving the model arithmetic duties."""
+    def signed(value):
+        return f"{value:+.2f}".replace(".", ",")
+
+    score_change = proposed["score"] - current["score"]
+    cost_change = proposed["cost"] - current["cost"]
+    district_changes = [
+        (proposed["districts"][name]["score"] - row["score"], name)
+        for name, row in current["districts"].items()
+    ]
+    declines = sorted((delta, name) for delta, name in district_changes if delta < -1e-9)
+    parts = [f"Score {signed(score_change)}; расходы {cost_change:+d} из бюджета 100."]
+    if declines:
+        parts.append("Ниже, чем в вашем плане: " + ", ".join(
+            f"{name} {signed(delta)}" for delta, name in declines) + ".")
+    else:
+        parts.append("Баллы районов не снижаются относительно вашего плана.")
+    return " ".join(parts)
+
+
+def _advice_scenario(decisions, current, question):
+    """Give a human three verified options and preference-aware model commentary."""
+    if not current.get("valid"):
+        raise ValueError("A valid current plan is required")
+    if not isinstance(question, str) or not 1 <= len(question.strip()) <= 500:
+        raise ValueError("Question must contain 1 to 500 characters")
+    one_change = _one_change_scenario(decisions, current, include_explanation=False)
+    optimum_decisions, optimum = _optimal_scenario()
+    has_better_one_change = one_change["score_delta"] > 1e-8
+    options = [
+        {"id": "current", "label": "Ваш план", "result": current,
+         "decisions": decisions, "tradeoff": "Ваши пять решений; база для сравнения."},
+        {"id": "one_change", "label": ("Лучшая замена одной меры" if has_better_one_change
+                                        else "Улучшения одной заменой нет"),
+         "result": one_change["proposed"],
+         "decisions": one_change["decisions"],
+         "tradeoff": (_option_tradeoff(current, one_change["proposed"])
+                      if has_better_one_change else
+                      "Допустимой замены с более высоким Score нет; это тот же набор решений.")},
+        {"id": "optimum", "label": "Максимум Score модели", "result": optimum,
+         "decisions": optimum_decisions,
+         "tradeoff": _option_tradeoff(current, optimum)},
+    ]
+    from explanation import advise
+    names = {key: data["name"] for key, data in catalog()["indicators"].items()}
+    return {"valid": True, "options": options,
+            "advice": advise(question.strip(), options, names)}
 
 
 def _fallback_explanation(result):
@@ -160,7 +212,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = urlsplit(self.path).path
-        if route not in ("/api/simulate", "/api/recommend-change"):
+        if route not in ("/api/simulate", "/api/recommend-change", "/api/advice"):
             self._json(404, {"error": "Unknown API route"})
             return
         try:
@@ -184,10 +236,19 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(400, result)
             return
         try:
-            self._json(200, _one_change_scenario(decisions, result))
+            if route == "/api/advice":
+                question = request.get("question")
+                if not isinstance(question, str) or not 1 <= len(question.strip()) <= 500:
+                    self._json(400, {"error": "Напишите вопрос или приоритет длиной до 500 символов."})
+                    return
+                self._json(200, _advice_scenario(decisions, result, question))
+            else:
+                self._json(200, _one_change_scenario(decisions, result))
         except Exception as exc:
-            print(f"One-change recommendation unavailable: {type(exc).__name__}: {exc}")
-            self._json(500, {"error": "Сравнение сценариев сейчас недоступно."})
+            print(f"Decision support unavailable: {type(exc).__name__}: {exc}")
+            message = ("Разбор вариантов сейчас недоступен." if route == "/api/advice"
+                       else "Сравнение сценариев сейчас недоступно.")
+            self._json(500, {"error": message})
 
 
 if __name__ == "__main__":

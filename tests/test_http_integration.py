@@ -65,7 +65,7 @@ class HTTPIntegrationTests(unittest.TestCase):
         cls.addClassCleanup(cls.thread.join, 5)
         cls.addClassCleanup(cls.httpd.shutdown)
 
-    def request(self, route, decisions=None):
+    def request(self, route, decisions=None, **fields):
         connection = HTTPConnection(*self.httpd.server_address, timeout=20)
         try:
             if decisions is None:
@@ -73,7 +73,7 @@ class HTTPIntegrationTests(unittest.TestCase):
             else:
                 connection.request(
                     "POST", route,
-                    body=json.dumps({"decisions": decisions}).encode("utf-8"),
+                    body=json.dumps({"decisions": decisions, **fields}).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                 )
             response = connection.getresponse()
@@ -171,6 +171,53 @@ class HTTPIntegrationTests(unittest.TestCase):
             self.assertIn("57,21", recommendation["explanation"]["text"])
             self.assertEqual(recommendation["proposed"], simulate(recommendation["decisions"]))
             self.assertEqual(selector.call_count, 2)
+
+    def test_advice_returns_three_verified_options_for_a_human_priority(self):
+        question = "Не хочу ухудшать Сарыарку"
+        with patch.object(explanation, "advise", wraps=explanation.advise) as advise, \
+                patch.object(explanation, "explain") as explain, \
+                patch.object(explanation, "explain_comparison") as compare:
+            status, result = self.request("/api/advice", EXAMPLE, question=question)
+            advise.assert_called_once()
+            self.assertEqual(advise.call_args.args[0], question)
+            explain.assert_not_called()
+            compare.assert_not_called()
+        self.assertEqual(status, 200)
+        self.assertTrue(result["valid"])
+        self.assertEqual([option["id"] for option in result["options"]],
+                         ["current", "one_change", "optimum"])
+        for option, score, cost in zip(result["options"],
+                                       (56.54307, 57.20556, 57.236735), (95, 100, 98)):
+            with self.subTest(option=option["id"]):
+                self.assertAlmostEqual(option["result"]["score"], score, places=8)
+                self.assertEqual(option["result"]["cost"], cost)
+                self.assertEqual(option["result"], simulate(option["decisions"]))
+                self.assertTrue(option["label"])
+                self.assertTrue(option["tradeoff"])
+        self.assertEqual(result["options"][0]["decisions"], EXAMPLE)
+        self.assertIn("Сарыарка", result["options"][1]["tradeoff"])
+        self.assertEqual(result["advice"]["source"], "computed_facts")
+        self.assertEqual(result["advice"]["selected_option"], "none")
+        self.assertTrue(result["advice"]["text"])
+
+    def test_advice_rejects_invalid_plan_or_question_before_optimization_and_ai(self):
+        cases = [(EXAMPLE[:4], "Что улучшить?"),
+                 *((EXAMPLE, question) for question in (None, "", "   ", "а" * 501, 37, []))]
+        with patch.object(explanation, "advise") as advise, \
+                patch.object(server, "_one_change_scenario") as one_change, \
+                patch.object(server, "_optimal_scenario") as optimum:
+            for decisions, question in cases:
+                with self.subTest(plan_size=len(decisions), question_type=type(question).__name__,
+                                  question_length=len(question) if isinstance(question, str) else None):
+                    status, result = self.request("/api/advice", decisions, question=question)
+                    self.assertEqual(status, 400)
+                    self.assertTrue(result.get("error") or result.get("errors"))
+                    self.assertNotIn("score", result)
+                    self.assertNotIn("options", result)
+                    self.assertNotIn("advice", result)
+            advise.assert_not_called()
+            one_change.assert_not_called()
+            optimum.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -2,8 +2,13 @@
 
 // The server owns simulation and Score. This interface only composes decisions
 // and displays catalogue fields and server results.
-const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change" };
-const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null };
+const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change", advice: "/api/advice" };
+const VERIFICATION_DECISIONS = [
+  { measure_id: "M7", district: "Нура" }, { measure_id: "M8", district: "Нура" },
+  { measure_id: "M10", district: "Нура" }, { measure_id: "M12", district: null },
+  { measure_id: "M5", district: "Сарыарка" }
+];
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, drag: null };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
@@ -65,9 +70,10 @@ function setStage(stage) {
   renderDistrictRail();
   renderInspector();
   syncScene();
-  window.scrollTo({ top: 0, behavior: "instant" });
   const heading = $(`stage-${stage}`).querySelector("h1");
   heading.setAttribute("tabindex", "-1");
+  if (stage === "report") heading.scrollIntoView({ block: "start", behavior: "instant" });
+  else window.scrollTo({ top: 0, behavior: "instant" });
   heading.focus({ preventScroll: true });
 }
 function validate(decisions, requireFive = false) {
@@ -108,6 +114,7 @@ function setDecisions(decisions, message) {
   state.revision += 1;
   state.result = null;
   state.proposal = null;
+  clearAdvisorResponse();
   $("comparison").hidden = true;
   $("plan-errors").hidden = true;
   syncNavigation();
@@ -131,8 +138,12 @@ function syncScene() {
   $("coverage-label").textContent = measure ? `${measure.id} · ${city(measure) ? "весь город" : state.pending?.district || state.selectedDistrict}` : "Наведите на меру";
   districtNames().forEach((name) => {
     const chip = node("span", name, `coverage-chip${affected.includes(name) ? " is-affected" : ""}${name === state.selectedDistrict ? " is-selected" : ""}`);
+    chip.dataset.dropDistrict = name;
     coverage.append(chip);
   });
+  const cityChip = node("span", "Весь город", `coverage-chip coverage-city${measure && city(measure) ? " is-affected" : ""}`);
+  cityChip.dataset.dropCity = "true";
+  coverage.append(cityChip);
   if (!state.scene) return;
   try {
     state.scene.update({
@@ -153,6 +164,7 @@ function renderDistrictRail() {
     const button = node("button", null, `rail-district${selected ? " is-active" : ""}`);
     button.type = "button";
     button.dataset.district = name;
+    button.dataset.dropDistrict = name;
     button.setAttribute("aria-pressed", String(selected));
     button.setAttribute("aria-label", `${name}, качество района ${format(source?.score)}, ${selected ? "выбран" : "выбрать"}`);
     button.append(node("span", `0${index + 1}`, "rail-index"), node("strong", name), node("b", format(source?.score)));
@@ -246,6 +258,160 @@ function renderCategories() {
     host.append(button);
   });
 }
+let dragToastTimer;
+function dragMessage(message, error = false) {
+  const toast = $("drag-toast");
+  clearTimeout(dragToastTimer);
+  toast.textContent = message;
+  toast.classList.toggle("is-error", error);
+  toast.hidden = false;
+  dragToastTimer = setTimeout(() => { toast.hidden = true; }, 3200);
+  announce(message);
+}
+function dropError(measure, target) {
+  if (!target) return "Перетащите меру на район или на цель «Весь город».";
+  if (city(measure) && target.kind !== "city") return "Эта мера действует на весь город. Перетащите её на «Весь город».";
+  if (!city(measure) && target.kind !== "district") return "Этой мере нужен конкретный район. Перетащите её на один из пяти районов.";
+  return validate([...state.decisions, { measure_id: measure.id, district: target.kind === "city" ? null : target.name }])[0] || "";
+}
+function renderDropBoard(measure) {
+  const host = $("drop-targets");
+  host.replaceChildren();
+  const targets = [...districtNames().map((name) => ({ kind: "district", name })), { kind: "city", name: "Весь город" }];
+  targets.forEach((target, index) => {
+    const button = node("button", null, "drop-target");
+    button.type = "button";
+    if (target.kind === "city") button.dataset.dropCity = "true";
+    else button.dataset.dropDistrict = target.name;
+    const error = dropError(measure, target);
+    if (error) { button.classList.add("is-blocked"); button.title = error; }
+    button.setAttribute("aria-label", `${target.name}${error ? `. ${error}` : ". Доступная цель"}`);
+    button.append(node("small", target.kind === "city" ? "◎" : `0${index + 1}`), node("strong", target.name));
+    host.append(button);
+  });
+  $("drop-board-hint").textContent = city(measure) ? "Цель: весь город" : "Выберите один из пяти районов";
+}
+function targetAt(clientX, clientY) {
+  const element = document.elementFromPoint(clientX, clientY);
+  const tile = element?.closest("[data-drop-district], [data-drop-city]");
+  if (tile?.dataset.dropCity) return { kind: "city", name: "Весь город", element: tile };
+  if (tile?.dataset.dropDistrict) return { kind: "district", name: tile.dataset.dropDistrict, element: tile };
+  try {
+    const name = state.scene?.pickDistrict?.(clientX, clientY);
+    if (name && districtNames().includes(name)) return { kind: "district", name, element: null };
+  } catch (error) { console.error("City pick failed", error); }
+  return null;
+}
+function moveGhost(drag, clientX, clientY) {
+  const rect = drag.ghost.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - rect.width - 8, Math.max(8, clientX + 15));
+  const top = drag.pointerType === "mouse" ? clientY + 18 : clientY - rect.height - 22;
+  drag.ghost.style.left = `${left}px`;
+  drag.ghost.style.top = `${Math.max(8, Math.min(window.innerHeight - rect.height - 8, top))}px`;
+}
+function previewDrop(drag, clientX, clientY) {
+  const target = targetAt(clientX, clientY);
+  const key = target ? `${target.kind}:${target.name}` : "";
+  if (drag.targetKey !== key || drag.target?.element !== target?.element) {
+    document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop", "is-invalid-drop"));
+    drag.targetKey = key;
+    drag.target = target;
+    const error = dropError(drag.measure, target);
+    drag.ghost.classList.toggle("is-denied", Boolean(target && error));
+    drag.ghost.classList.toggle("is-over", Boolean(target && !error));
+    if (target?.element) {
+      target.element.classList.add("is-hot-drop");
+      target.element.classList.toggle("is-invalid-drop", Boolean(error));
+    }
+    if (key) $("drop-board-hint").textContent = error || `${drag.measure.id} → ${target.name}`;
+    else $("drop-board-hint").textContent = city(drag.measure) ? "Цель: весь город" : "Выберите один из пяти районов";
+    try { state.scene?.setDropPreview?.(target?.kind === "district" && !error ? target.name : null); }
+    catch (error) { console.error("City drop preview failed", error); }
+  }
+}
+function startMeasureDrag(drag, clientX, clientY) {
+  drag.started = true;
+  renderDropBoard(drag.measure);
+  $("drop-board").hidden = false;
+  document.body.classList.add("is-dragging-measure");
+  drag.source.classList.add("is-being-dragged");
+  drag.ghost = node("div", null, "drag-ghost");
+  drag.ghost.append(node("small", `${drag.measure.id} / ${drag.measure.category}`), node("strong", drag.measure.name), node("b", `${format(drag.measure.cost, 0)} ед.`));
+  document.body.append(drag.ghost);
+  state.hoverMeasureId = drag.measure.id;
+  syncScene();
+  moveGhost(drag, clientX, clientY);
+  previewDrop(drag, clientX, clientY);
+}
+function finishMeasureDrag(event, cancelled = false) {
+  const drag = state.drag;
+  if (!drag || event?.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  state.drag = null;
+  try { drag.source.releasePointerCapture?.(drag.pointerId); } catch (_) { /* capture may already be released */ }
+  if (!drag.started) {
+    if (!cancelled && drag.pointerType === "mouse" && !drag.fromGrip) openMeasure(drag.measure.id);
+    else if (cancelled) { state.hoverMeasureId = null; syncScene(); }
+    return;
+  }
+  if (drag.fromGrip) {
+    drag.source.dataset.justDragged = "true";
+    setTimeout(() => { delete drag.source.dataset.justDragged; }, 450);
+  }
+  if (event && !cancelled) previewDrop(drag, event.clientX, event.clientY);
+  // A slight finger slip should behave like a tap, even if the board appeared
+  // underneath the finger while it was still near the source card.
+  const shortTravel = !cancelled && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < (drag.pointerType === "mouse" ? 18 : 28);
+  const target = cancelled || shortTravel ? null : drag.target;
+  const error = cancelled ? "" : dropError(drag.measure, target);
+  document.body.classList.remove("is-dragging-measure");
+  $("drop-board").hidden = true;
+  document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop", "is-invalid-drop"));
+  drag.source.classList.remove("is-being-dragged");
+  state.hoverMeasureId = null;
+  try { state.scene?.setDropPreview?.(null); } catch (_) { /* optional scene API */ }
+  if (drag.ghost) {
+    if (target && !error) {
+      const rect = target.element?.getBoundingClientRect();
+      const centerX = rect ? rect.left + rect.width / 2 : event.clientX;
+      const centerY = rect ? rect.top + rect.height / 2 : event.clientY;
+      drag.ghost.classList.add("is-snapping");
+      drag.ghost.style.left = `${centerX - drag.ghost.offsetWidth / 2}px`;
+      drag.ghost.style.top = `${centerY - drag.ghost.offsetHeight / 2}px`;
+      setTimeout(() => drag.ghost.remove(), 180);
+    } else drag.ghost.remove();
+  }
+  if (shortTravel) { syncScene(); openMeasure(drag.measure.id); }
+  else if (!cancelled && error) { syncScene(); notice(error, true); dragMessage(error, true); }
+  else if (!cancelled && target) {
+    const decision = { measure_id: drag.measure.id, district: target.kind === "city" ? null : target.name };
+    const next = [...state.decisions, decision];
+    setDecisions(next);
+    const message = `${drag.measure.id} направлена: ${target.name}. ${next.length} из 5 решений, ${format(costOf(next), 0)} из ${format(budget(), 0)} ед. бюджета.`;
+    dragMessage(message);
+  } else syncScene();
+}
+function beginMeasureDrag(measureId, event, source, fromGrip = false) {
+  if (state.drag || locked() || state.stage !== "planner" || event.button !== 0 && event.pointerType === "mouse") return;
+  if (event.pointerType !== "mouse" && !fromGrip) return;
+  const measure = measureById(measureId);
+  if (!measure || state.decisions.some((item) => item.measure_id === measureId)) return;
+  if (event.pointerType === "mouse" && !fromGrip && event.target.closest("button, a, input, select, textarea")) return;
+  state.drag = { measure, source, fromGrip, pointerId: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, started: false, target: null, targetKey: "", ghost: null };
+  try { source.setPointerCapture(event.pointerId); } catch (_) { /* drag still works through window listeners */ }
+}
+window.addEventListener("pointermove", (event) => {
+  const drag = state.drag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  if (!drag.started && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < (drag.pointerType === "mouse" ? 7 : 10)) return;
+  if (!drag.started) startMeasureDrag(drag, event.clientX, event.clientY);
+  event.preventDefault();
+  moveGhost(drag, event.clientX, event.clientY);
+  previewDrop(drag, event.clientX, event.clientY);
+}, { passive: false });
+window.addEventListener("pointerup", (event) => finishMeasureDrag(event));
+window.addEventListener("pointercancel", (event) => finishMeasureDrag(event, true));
+window.addEventListener("blur", () => finishMeasureDrag(null, true));
+window.addEventListener("keydown", (event) => { if (event.key === "Escape" && state.drag) finishMeasureDrag(null, true); });
 function renderMeasures() {
   state.hoverMeasureId = null;
   syncScene();
@@ -299,13 +465,23 @@ function renderMeasures() {
     button.setAttribute("aria-label", selected ? `${measure.id} уже в пакете` : `Выбрать ${measure.id}: ${measure.name}`);
     button.append(node("span", selected ? "В вашем пакете" : "Направить меру"), icon(selected ? "check" : "plus"));
     button.addEventListener("click", () => openMeasure(measure.id));
-    const highlight = () => { state.hoverMeasureId = measure.id; syncScene(); };
-    const unhighlight = () => { if (state.hoverMeasureId === measure.id) { state.hoverMeasureId = null; syncScene(); } };
+    const grip = node("button", null, `measure-drag-grip${!selected && state.decisions.length === 0 && visible[0] === measure ? " is-demo" : ""}`);
+    grip.type = "button";
+    grip.disabled = selected || locked();
+    grip.setAttribute("aria-label", `Перетащить ${measure.id}: ${measure.name}. Для обычного выбора нажмите кнопку`);
+    grip.title = "Перетащить на район или весь город";
+    grip.append(node("span", "⠿", "grip-mark"));
+    grip.addEventListener("pointerdown", (event) => beginMeasureDrag(measure.id, event, grip, true));
+    grip.addEventListener("click", () => { if (!grip.dataset.justDragged) openMeasure(measure.id); delete grip.dataset.justDragged; });
+    const actions = node("div", null, "measure-actions"); actions.append(button, grip);
+    const highlight = () => { if (!state.drag?.started) { state.hoverMeasureId = measure.id; syncScene(); } };
+    const unhighlight = () => { if (!state.drag?.started && state.hoverMeasureId === measure.id) { state.hoverMeasureId = null; syncScene(); } };
+    card.addEventListener("pointerdown", (event) => beginMeasureDrag(measure.id, event, card));
     card.addEventListener("pointerenter", highlight);
     card.addEventListener("pointerleave", unhighlight);
     card.addEventListener("focusin", highlight);
     card.addEventListener("focusout", (event) => { if (!card.contains(event.relatedTarget)) unhighlight(); });
-    card.append(top, node("p", `${measure.id} / ${categoryLabels[measure.category] || measure.category}`, "measure-category"), node("h3", measure.name), meta, button);
+    card.append(top, node("p", `${measure.id} / ${categoryLabels[measure.category] || measure.category}`, "measure-category"), node("h3", measure.name), meta, actions);
     host.append(card);
   });
 }
@@ -368,16 +544,18 @@ function updateBudget() {
   $("submit-plan").querySelector("span").textContent = state.busy === "simulate" ? "Считаем последствия…" : "Подписать распоряжения";
   $("suggest-plan").disabled = !!state.busy;
   $("compare-plan").disabled = !!state.busy || !state.result;
-  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "Сравнить с оптимумом";
+  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Оптимизатор считает план…" : "Сравнить с оптимумом";
   $("recommend-change").disabled = !!state.busy || !state.result;
   $("recommend-change").querySelector("span").textContent = state.busy === "recommend" ? "Ищем одну замену…" : "Улучшить одно распоряжение";
-  $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "План советника";
-  $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем пакет и готовим итоговый доклад" : state.busy === "optimize" ? "Советник готовит предложение. Ваш пакет сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "распоряжение" : missing < 5 ? "распоряжения" : "распоряжений"}` : errors[0] || "Пакет готов к проверке и расчёту";
+  $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Оптимизатор считает план…" : "Оптимум по Score";
+  $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем пакет и готовим итоговый доклад" : state.busy === "optimize" ? "Оптимизатор рассчитывает вариант. Ваш пакет сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "распоряжение" : missing < 5 ? "распоряжения" : "распоряжений"}` : errors[0] || "Пакет готов к проверке и расчёту";
 }
 function renderPlanner() { renderCategories(); renderMeasures(); renderSlots(); updateBudget(); }
 function setBusy(kind) {
   state.busy = kind;
   $("stage-planner").setAttribute("aria-busy", String(!!kind));
+  $("example-scenario").disabled = !!kind;
+  $("example-scenario").querySelector("span").textContent = kind === "simulate" ? "Считаем сценарий…" : "Показать проверочный сценарий";
   renderMeasures(); renderSlots(); updateBudget();
 }
 function pendingDecisions() {
@@ -451,7 +629,9 @@ function confirmMeasure() {
 }
 async function requestJson(url, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  // Result routes may include a model call (NVIDIA alone can take 45 seconds).
+  const timeoutMs = url === API.catalog ? 30000 : 75000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -520,6 +700,7 @@ function renderReport(result, decisions) {
     synergies.append(node("p", `${synergy.measures.join(" + ")}: ${indicatorName(synergy.indicator)} +${format(synergy.bonus, 0)} · ${synergy.district}`));
   });
   displayExplanation(result.explanation);
+  clearAdvisorResponse();
   const signed = $("signed-decisions"); signed.replaceChildren();
   decisions.forEach((decision, index) => {
     const measure = measureById(decision.measure_id);
@@ -600,6 +781,10 @@ function renderComparison(current, proposed, decisions) {
   const describe = (items) => items.map(({ measure_id, district }) => `${measure_id} / ${district || "город"}`).join(" · ");
   $("comparison-measures").textContent = `Ваш план: ${describe(state.decisions)}. Рекомендация: ${describe(decisions)}.`;
 }
+function sameDecisions(first, second) {
+  const keys = (items) => items.map((item) => `${item.measure_id}/${item.district || "город"}`).sort().join("|");
+  return keys(first) === keys(second);
+}
 function showSuggestion(result, decisions, explanation = null, removed = [], added = [], improved = true) {
   state.proposal = { result, decisions };
   renderComparison(state.result, result, decisions);
@@ -627,12 +812,12 @@ function showSuggestion(result, decisions, explanation = null, removed = [], add
       ? `AI-разбор проверенных расчётов · ${explanation.provider || "модель"}`
       : "Разбор по рассчитанным фактам. AI-модель недоступна.";
   }
-  $("apply-suggestion").hidden = !improved;
+  $("apply-suggestion").hidden = !improved || sameDecisions(state.decisions, decisions);
   $("suggestion-dialog").showModal();
 }
 async function suggestPlan() {
   if (state.busy) return;
-  notice(""); state.proposal = null; setBusy("optimize"); announce("Советник ищет рассчитанный план. Ваш пакет остаётся у вас.");
+  notice(""); state.proposal = null; setBusy("optimize"); announce("Оптимизатор ищет лучший план по Score. Ваш пакет остаётся у вас.");
   try {
     const result = await requestJson(API.optimize);
     const decisions = validateProposal(result);
@@ -641,7 +826,7 @@ async function suggestPlan() {
     showSuggestion(result, decisions, result.explanation);
   } catch (error) {
     console.error("Proposal request failed", error);
-    notice("Советник сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
+    notice("Оптимизатор сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
   } finally { setBusy(null); }
 }
 async function recommendChange() {
@@ -649,7 +834,7 @@ async function recommendChange() {
   const revision = state.revision;
   const decisions = state.decisions.map((item) => ({ ...item }));
   notice("");
-  setBusy("recommend"); announce("Советник ищет лучшую замену одного распоряжения.");
+  setBusy("recommend"); announce("Оптимизатор ищет лучшую замену одного распоряжения.");
   try {
     const answer = await requestJson(API.recommendChange, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions })
@@ -660,7 +845,7 @@ async function recommendChange() {
     const proposed = { ...answer.proposed, decisions: answer.decisions };
     const next = validateProposal(proposed);
     $("suggestion-title").textContent = "Одна замена. Проверенный результат.";
-    $("suggestion-description").textContent = "Советник сохранил четыре ваших решения и проверил лучшую допустимую замену симулятором.";
+    $("suggestion-description").textContent = "Оптимизатор сохранил четыре ваших решения и проверил лучшую допустимую замену симулятором.";
     showSuggestion(proposed, next, answer.explanation, answer.removed || [], answer.added || [], answer.score_delta > 0);
   } catch (error) {
     console.error("One-change recommendation failed", error);
@@ -668,13 +853,96 @@ async function recommendChange() {
     notice("Совет по одной замене сейчас недоступен. Ваш план сохранён.", true);
   } finally { setBusy(null); }
 }
+function clearAdvisorResponse() {
+  $("advisor-response").hidden = true;
+  $("advisor-error").hidden = true;
+  $("advisor-response-text").textContent = "";
+  $("advisor-options").replaceChildren();
+}
+function renderAdvisorAnswer(answer) {
+  const advice = answer?.advice;
+  if (answer?.valid !== true || typeof advice?.text !== "string" || !advice.text.trim()
+      || !Array.isArray(answer.options) || answer.options.length !== 3) throw new Error("Incomplete decision support");
+  const byId = new Map();
+  for (const option of answer.options) {
+    if (!["current", "one_change", "optimum"].includes(option?.id) || byId.has(option.id)
+        || typeof option.label !== "string" || !finite(option.result?.score) || !finite(option.result?.cost)) throw new Error("Invalid computed option");
+    const decisions = validateProposal({ ...option.result, decisions: option.decisions });
+    byId.set(option.id, { ...option, decisions });
+  }
+  if (byId.size !== 3 || Math.abs(byId.get("current").result.score - state.result.score) > 1e-8) throw new Error("Options do not match current plan");
+  $("advisor-response-text").textContent = advice.text.trim();
+  $("advisor-response-source").textContent = advice.source === "model"
+    ? `AI-разбор проверенных расчётов${advice.model ? ` · ${advice.model}` : ""}`
+    : "Разбор по рассчитанным фактам · AI-модель недоступна";
+  const host = $("advisor-options"); host.replaceChildren();
+  for (const id of ["current", "one_change", "optimum"]) {
+    const option = byId.get(id);
+    const card = node("article", null, "advisor-option");
+    card.append(node("strong", option.label));
+    if (advice.source === "model" && advice.selected_option === id) card.append(node("span", "Советник выделил для вашего приоритета", "advisor-option-picked"));
+    card.append(node("span", format(option.result.score), "advisor-option-score"));
+    card.append(node("small", `${format(option.result.cost, 0)} / ${format(budget(), 0)} ед. бюджета`));
+    if (typeof option.tradeoff === "string" && option.tradeoff.trim()) card.append(node("p", option.tradeoff.trim()));
+    if (id !== "current" && !sameDecisions(state.decisions, option.decisions)) {
+      const button = node("button", "Сравнить с моим планом", "button button-secondary");
+      button.type = "button";
+      button.addEventListener("click", () => {
+        if (state.busy || !state.result) return;
+        $("suggestion-title").textContent = id === "optimum" ? "Оптимум заданной модели." : "Одна замена. Проверенный результат.";
+        $("suggestion-description").textContent = id === "optimum"
+          ? "Лучший допустимый план по Score среди всех комбинаций пяти мер. Сравните районы перед выбором."
+          : "Лучшая допустимая замена одного распоряжения по Score. Сравните районы перед выбором.";
+        showSuggestion(option.result, option.decisions);
+      });
+      card.append(button);
+    }
+    host.append(card);
+  }
+  $("advisor-response").hidden = false;
+}
+async function askAdvisor(event) {
+  event.preventDefault();
+  if (state.adviceBusy || !state.result || state.busy) return;
+  const question = $("advisor-priority").value.trim();
+  if (!question) { $("advisor-priority").focus(); return; }
+  const revision = state.revision;
+  const score = state.result.score;
+  const decisions = state.decisions.map((item) => ({ ...item }));
+  clearAdvisorResponse();
+  state.adviceBusy = true;
+  $("advisor-priority").disabled = true;
+  $("ask-advisor").disabled = true;
+  $("ask-advisor").textContent = "Советник разбирает варианты…";
+  announce("Советник сопоставляет ваш приоритет с рассчитанными вариантами.");
+  try {
+    const answer = await requestJson(API.advice, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions, question })
+    });
+    if (revision !== state.revision || !state.result || score !== state.result.score) return;
+    renderAdvisorAnswer(answer);
+    announce("Разбор вашего приоритета готов. Показаны три рассчитанных варианта.");
+  } catch (error) {
+    console.error("Decision support unavailable", error);
+    if (revision === state.revision) {
+      $("advisor-error").textContent = "Не удалось разобрать приоритет. Ваш план и результаты расчёта сохранены; попробуйте ещё раз.";
+      $("advisor-error").hidden = false;
+      announce("Советник сейчас недоступен. Ваш план сохранён.");
+    }
+  } finally {
+    state.adviceBusy = false;
+    $("advisor-priority").disabled = false;
+    $("ask-advisor").disabled = false;
+    $("ask-advisor").replaceChildren(document.createTextNode("Разобрать варианты "), icon("arrow"));
+  }
+}
 function applySuggestion() {
   if (!state.proposal || state.busy) return;
   const decisions = state.proposal.decisions;
   $("suggestion-dialog").close();
-  setDecisions(decisions, "План советника перенесён в пакет. Его можно изменить перед подписанием.");
+  setDecisions(decisions, "Рассчитанный план перенесён в пакет. Его можно изменить перед подписанием.");
   setStage("planner");
-  notice("План советника в вашем пакете. Проверьте пять распоряжений и подпишите, когда будете готовы.");
+  notice("Рассчитанный план в вашем пакете. Проверьте пять распоряжений и подпишите, когда будете готовы.");
 }
 async function start() {
   $("loading").hidden = false; $("load-error").hidden = true;
@@ -717,7 +985,14 @@ function openPlannerAtCatalog(view) {
     title.focus({ preventScroll: true });
   });
 }
+function showVerificationScenario() {
+  if (!state.catalog || state.busy) return;
+  setDecisions(VERIFICATION_DECISIONS, "Проверочный пакет загружен. Сервер рассчитывает его по обычным правилам.");
+  setStage("planner");
+  calculate();
+}
 $("start-shift").addEventListener("click", () => openPlannerAtCatalog("all"));
+$("example-scenario").addEventListener("click", showVerificationScenario);
 $("district-action").addEventListener("click", () => {
   if (state.stage === "report") {
     setStage("planner");
@@ -736,6 +1011,8 @@ $("submit-plan").addEventListener("click", calculate);
 $("suggest-plan").addEventListener("click", suggestPlan);
 $("compare-plan").addEventListener("click", () => { if (state.result) suggestPlan(); });
 $("recommend-change").addEventListener("click", recommendChange);
+$("advisor-priority").addEventListener("input", clearAdvisorResponse);
+$("advisor-form").addEventListener("submit", askAdvisor);
 $("mobile-plan-jump").addEventListener("click", () => {
   const title = $("portfolio-title");
   title.setAttribute("tabindex", "-1");
