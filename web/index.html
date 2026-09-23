@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101c28">
+  <title>Аким на 5 часов — городской симулятор</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/charts.css" onerror="this.remove()">
+  <script src="/charts.js" defer onerror="this.remove()"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Аким на 5 часов — начало">
+        <span class="brand-mark">А<span>5</span></span>
+        <span>Аким <em>на 5 часов</em></span>
+      </a>
+      <span class="topbar-note"><span class="live-dot"></span> Симулятор решений для Астаны</span>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">ГОРОДСКАЯ ЛАБОРАТОРИЯ <span> / </span> СЦЕНАРИЙ 01</p>
+          <h1 id="hero-title">Пять решений.<br><span>Один город.</span></h1>
+          <p class="hero-description">У вас 100 бюджетных единиц и пять решений для районов Астаны. Соберите план, проверьте его эффект и увидьте цену компромиссов.</p>
+          <div class="hero-points">
+            <span><b>05</b> районов</span><span><b>14</b> мер</span><span><b>08</b> кварталов</span>
+          </div>
+        </div>
+        <div class="hero-orbit" aria-hidden="true"><span class="orbit orbit-one"></span><span class="orbit orbit-two"></span><span class="orbit-core">AST<br>ANA</span><span class="orbit-label orbit-label-a">01 / ТРАНСПОРТ</span><span class="orbit-label orbit-label-b">02 / ГОРОД</span></div>
+      </section>
+
+      <div id="app-error" class="app-error" role="alert" hidden></div>
+      <div id="loading" class="loading" role="status">Загружаем исходные данные города…</div>
+
+      <div id="app" hidden>
+        <section class="overview" aria-label="Условия сценария">
+          <div class="overview-item"><small>ИСХОДНЫЙ SCORE</small><strong id="base-score">—</strong><span>Одинаков для всех участников</span></div>
+          <div class="overview-item"><small>БЮДЖЕТ</small><strong>100<span class="unit"> ед.</span></strong><span>На все пять мероприятий</span></div>
+          <div class="overview-item"><small>ВАША МИССИЯ</small><strong>5 <span class="unit">из 5</span></strong><span>Разных мер, до двух в направлении</span></div>
+        </section>
+
+        <div class="workspace">
+          <section class="planner panel" aria-labelledby="planner-title">
+            <div class="section-heading"><div><p class="eyebrow">01 / КОНСТРУКТОР</p><h2 id="planner-title">Ваш план для города</h2></div><span class="section-index">01 — 03</span></div>
+            <p class="section-intro">Выберите ровно пять разных мер. Для районной меры укажите район; городская действует на весь город.</p>
+            <div id="decision-slots" class="decision-slots"></div>
+            <div class="budget-block">
+              <div class="budget-line"><span>Планируемые расходы</span><strong><span id="budget-used">0</span> <small>/ 100</small></strong></div>
+              <div class="budget-track" role="progressbar" aria-label="Использованный бюджет" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="budget-progress"><span id="budget-fill"></span></div>
+              <p id="budget-hint">Остаток бюджета не влияет на итоговый Score.</p>
+            </div>
+            <button id="submit-plan" class="primary-button" type="button"><span>Рассчитать сценарий</span><span aria-hidden="true">↗</span></button>
+            <p class="submit-note">Расчёт учитывает лаги, синергии, конфликты и показатели всех районов.</p>
+          </section>
+
+          <aside class="catalog panel" aria-labelledby="catalog-title">
+            <div class="section-heading"><div><p class="eyebrow">02 / ВАРИАНТЫ</p><h2 id="catalog-title">Каталог мероприятий</h2></div><span class="section-index">M1 — M14</span></div>
+            <p class="section-intro">Пять направлений. Стоимость и масштаб действия указаны на карточках.</p>
+            <div id="catalog-groups" class="catalog-groups"></div>
+          </aside>
+        </div>
+
+        <section id="result-section" class="result-section" aria-labelledby="result-title" hidden>
+          <div class="section-heading result-heading"><div><p class="eyebrow">03 / РЕЗУЛЬТАТ</p><h2 id="result-title">Что изменится?</h2></div><span class="section-index">ПРОГНОЗ НА 8 КВАРТАЛОВ</span></div>
+          <div id="result-errors" class="result-errors" role="alert" hidden></div>
+          <div id="valid-result" hidden>
+            <div class="score-board">
+              <div><small>БЫЛО</small><strong id="result-base">—</strong></div>
+              <div class="score-arrow" aria-hidden="true">→</div>
+              <div><small>СТАЛО</small><strong id="result-score">—</strong></div>
+              <div class="score-difference"><small>ИЗМЕНЕНИЕ</small><strong id="result-change">—</strong></div>
+            </div>
+            <div class="result-grid">
+              <article class="result-card"><div class="card-head"><h3>Районы</h3><span>СРАВНЕНИЕ</span></div><div id="district-chart"></div><div id="district-list" class="district-list"></div></article>
+              <article class="result-card"><div class="card-head"><h3>Объяснение</h3><span>ПО РАСЧЁТУ</span></div><div id="explanation" class="explanation"></div></article>
+            </div>
+            <div id="result-details" class="result-details"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+    <footer class="footer"><span>АКИМ НА 5 ЧАСОВ</span><span>Решения видны. Компромиссы тоже.</span></footer>
+  </div>
+</body>
+</html>
