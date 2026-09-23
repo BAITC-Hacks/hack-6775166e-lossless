@@ -292,6 +292,7 @@
     }
 
     function draw(time = performance.now()) {
+      animationFrame = 0;
       if (destroyed || !ctx || width < 2 || height < 2) return;
       const progress = reducedMotion ? 1 : revealStart ? clamp((time - revealStart) / 750, 0, 1) : 1;
       ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
