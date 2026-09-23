@@ -46,7 +46,7 @@ function notice(message = "", error = false) {
   $("planner-notice").classList.toggle("is-error", error);
 }
 function syncNavigation() {
-  document.querySelectorAll("[data-stage]").forEach((button) => {
+  document.querySelectorAll("button[data-stage]").forEach((button) => {
     const stage = button.dataset.stage;
     button.disabled = (stage !== "briefing" && !state.catalog) || (stage === "report" && !state.result);
     if (!button.classList.contains("stage-link")) return;
@@ -57,7 +57,8 @@ function syncNavigation() {
   });
 }
 function setStage(stage) {
-  if (!state.catalog || !["briefing", "planner", "report"].includes(stage) || stage === "report" && !state.result) return;
+  if (!state.catalog || !["briefing", "planner", "report"].includes(stage) || stage === "report" && !state.result) return false;
+  if (stage === state.stage) return true;
   state.stage = stage;
   $("app").dataset.stage = stage;
   ["briefing", "planner", "report"].forEach((name) => { $(`stage-${name}`).hidden = name !== stage; });
@@ -70,6 +71,20 @@ function setStage(stage) {
   if (stage === "report") heading.scrollIntoView({ block: "start", behavior: "instant" });
   else window.scrollTo({ top: 0, behavior: "instant" });
   heading.focus({ preventScroll: true });
+  return true;
+}
+function scrollToSection(element) {
+  requestAnimationFrame(() => element?.scrollIntoView({ block: "start", behavior: "instant" }));
+}
+function keepAnchorPosition(anchor, update) {
+  const before = anchor.getBoundingClientRect().top;
+  update();
+  const restore = () => {
+    const shift = anchor.getBoundingClientRect().top - before;
+    if (Math.abs(shift) > 1) window.scrollTo({ top: window.scrollY + shift, behavior: "instant" });
+  };
+  restore();
+  requestAnimationFrame(restore);
 }
 function validate(decisions, requireFive = false) {
   const errors = [];
@@ -113,7 +128,8 @@ function setDecisions(decisions, message) {
   $("comparison").hidden = true;
   $("plan-errors").hidden = true;
   syncNavigation();
-  renderPlanner();
+  if (state.stage === "planner") keepAnchorPosition($("catalog-title"), renderPlanner);
+  else renderPlanner();
   renderDistrictRail(); renderInspector(); syncScene();
   notice("");
   if (message) announce(message);
@@ -218,7 +234,7 @@ function selectDistrict(name, restoreFocus = false) {
   renderDistrictRail(); renderInspector(); syncScene();
   if (state.stage === "planner") renderMeasures();
   if (restoreFocus) $("district-cards").querySelector(`[data-district="${name}"]`)?.focus({ preventScroll: true });
-  if (!state.pending && window.matchMedia("(max-width: 850px)").matches) requestAnimationFrame(() => {
+  if (state.stage === "briefing" && !state.pending && window.matchMedia("(max-width: 850px)").matches) requestAnimationFrame(() => {
     const title = $("district-inspector-title");
     title.setAttribute("tabindex", "-1");
     title.scrollIntoView({ block: "start", behavior: "instant" });
@@ -235,22 +251,30 @@ function renderBriefing() {
 }
 function renderCategories() {
   const host = $("category-tabs");
-  host.replaceChildren();
   const categories = ["Все", ...new Set(state.measures.map((item) => item.category))];
-  categories.forEach((category) => {
-    const button = node("button", null, `category-tab${state.category === category ? " is-active" : ""}`);
-    button.type = "button";
-    button.setAttribute("aria-pressed", String(state.category === category));
-    if (category !== "Все") button.append(icon(categoryIcons[category] || "city"));
-    button.append(node("span", categoryLabels[category] || category));
-    button.addEventListener("click", () => {
-      state.category = category;
-      renderCategories();
-      renderMeasures();
-      // Restore keyboard focus after replacing the filter controls.
-      [...host.children].find((item) => item.getAttribute("aria-pressed") === "true")?.focus({ preventScroll: true });
+  if (host.childElementCount !== categories.length) {
+    host.replaceChildren();
+    categories.forEach((category) => {
+      const button = node("button", null, "category-tab");
+      button.type = "button";
+      button.dataset.category = category;
+      if (category !== "Все") button.append(icon(categoryIcons[category] || "city"));
+      button.append(node("span", categoryLabels[category] || category));
+      button.addEventListener("click", () => {
+        if (state.category === category) return;
+        keepAnchorPosition(host, () => {
+          state.category = category;
+          renderCategories();
+          renderMeasures();
+        });
+      });
+      host.append(button);
     });
-    host.append(button);
+  }
+  [...host.children].forEach((button) => {
+    const active = button.dataset.category === state.category;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
   });
 }
 let dragToastTimer;
@@ -429,7 +453,10 @@ function renderMeasures() {
     empty.append(node("strong", "В этой категории нет мер под две главные задачи района."));
     const showAll = node("button", "Показать все 14 мер", "text-button");
     showAll.type = "button";
-    showAll.addEventListener("click", () => { state.measureView = "all"; state.category = "Все"; renderCategories(); renderMeasures(); });
+    showAll.addEventListener("click", () => keepAnchorPosition($("measure-view"), () => {
+      state.measureView = "all"; state.category = "Все"; renderCategories(); renderMeasures();
+      $("view-all-measures").focus({ preventScroll: true });
+    }));
     empty.append(showAll); host.append(empty); return;
   }
   visible.forEach((measure) => {
@@ -721,7 +748,7 @@ async function calculate() {
     state.result = result;
     state.resultView = "after";
     renderReport(result, decisions);
-    setStage("report"); announce(`Пять распоряжений подписаны. Итоговый Score ${format(result.score)}.`);
+    setStage("report"); scrollToSection($("stage-report")); announce(`Пять распоряжений подписаны. Итоговый Score ${format(result.score)}.`);
   } catch (error) {
     console.error("Simulation request failed", error);
     if (revision === state.revision) showPlanErrors(["Не удалось получить расчёт. Ваш пакет сохранён — попробуйте подписать его ещё раз."]);
@@ -817,7 +844,7 @@ async function suggestPlan() {
     showSuggestion(result, decisions);
   } catch (error) {
     console.error("Proposal request failed", error);
-    if (state.stage === "report") setStage("planner");
+    if (state.stage === "report") { setStage("planner"); scrollToSection($("planner-notice")); }
     notice("Оптимизатор сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
   } finally { setBusy(null); }
 }
@@ -933,6 +960,7 @@ function applySuggestion() {
   $("suggestion-dialog").close();
   setDecisions(decisions, "Рассчитанный план перенесён в пакет. Его можно изменить перед подписанием.");
   setStage("planner");
+  scrollToSection($("portfolio-title"));
   notice("Рассчитанный план в вашем пакете. Проверьте пять распоряжений и подпишите, когда будете готовы.");
 }
 async function start() {
@@ -963,18 +991,19 @@ async function start() {
   } finally { $("loading").hidden = true; }
 }
 
-document.querySelectorAll("[data-stage]").forEach((button) => button.addEventListener("click", () => setStage(button.dataset.stage)));
+document.querySelectorAll("button[data-stage]").forEach((button) => button.addEventListener("click", () => {
+  const stage = button.dataset.stage;
+  if (setStage(stage)) scrollToSection(stage === "briefing" ? document.querySelector(".city-deck") : $(`stage-${stage}`));
+}));
 function openPlannerAtCatalog(view) {
   state.measureView = view;
   state.category = "Все";
   setStage("planner");
   renderMeasures();
-  requestAnimationFrame(() => {
-    const title = $("catalog-title");
-    title.setAttribute("tabindex", "-1");
-    title.scrollIntoView({ block: "start", behavior: "instant" });
-    title.focus({ preventScroll: true });
-  });
+  const title = $("catalog-title");
+  title.setAttribute("tabindex", "-1");
+  title.focus({ preventScroll: true });
+  scrollToSection(title);
 }
 function showVerificationScenario() {
   if (!state.catalog || state.busy) return;
@@ -987,13 +1016,19 @@ $("example-scenario").addEventListener("click", showVerificationScenario);
 $("district-action").addEventListener("click", () => {
   if (state.stage === "report") {
     setStage("planner");
-    requestAnimationFrame(() => $("portfolio-title").scrollIntoView({ block: "start", behavior: "instant" }));
+    scrollToSection($("portfolio-title"));
     return;
   }
   openPlannerAtCatalog("district");
 });
-$("view-district-measures").addEventListener("click", () => { state.measureView = "district"; renderMeasures(); $("view-district-measures").focus({ preventScroll: true }); });
-$("view-all-measures").addEventListener("click", () => { state.measureView = "all"; renderMeasures(); $("view-all-measures").focus({ preventScroll: true }); });
+$("view-district-measures").addEventListener("click", () => {
+  if (state.measureView === "district") return;
+  keepAnchorPosition($("measure-view"), () => { state.measureView = "district"; renderMeasures(); });
+});
+$("view-all-measures").addEventListener("click", () => {
+  if (state.measureView === "all") return;
+  keepAnchorPosition($("measure-view"), () => { state.measureView = "all"; renderMeasures(); });
+});
 $("view-before").addEventListener("click", () => { state.resultView = "before"; renderDistrictRail(); renderInspector(); syncScene(); });
 $("view-after").addEventListener("click", () => { state.resultView = "after"; renderDistrictRail(); renderInspector(); syncScene(); });
 $("retry-catalog").addEventListener("click", start);
