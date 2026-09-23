@@ -3,6 +3,11 @@
 // The server owns simulation and Score. This interface only composes decisions
 // and displays catalogue fields and server results.
 const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change", advice: "/api/advice" };
+const VERIFICATION_DECISIONS = [
+  { measure_id: "M7", district: "Нура" }, { measure_id: "M8", district: "Нура" },
+  { measure_id: "M10", district: "Нура" }, { measure_id: "M12", district: null },
+  { measure_id: "M5", district: "Сарыарка" }
+];
 const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, adviceBusy: false, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, drag: null };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
@@ -60,9 +65,10 @@ function setStage(stage) {
   renderDistrictRail();
   renderInspector();
   syncScene();
-  window.scrollTo({ top: 0, behavior: "instant" });
   const heading = $(`stage-${stage}`).querySelector("h1");
   heading.setAttribute("tabindex", "-1");
+  if (stage === "report") heading.scrollIntoView({ block: "start", behavior: "instant" });
+  else window.scrollTo({ top: 0, behavior: "instant" });
   heading.focus({ preventScroll: true });
 }
 function validate(decisions, requireFive = false) {
@@ -542,6 +548,8 @@ function renderPlanner() { renderCategories(); renderMeasures(); renderSlots(); 
 function setBusy(kind) {
   state.busy = kind;
   $("stage-planner").setAttribute("aria-busy", String(!!kind));
+  $("example-scenario").disabled = !!kind;
+  $("example-scenario").querySelector("span").textContent = kind === "simulate" ? "Считаем сценарий…" : "Показать проверочный сценарий";
   renderMeasures(); renderSlots(); updateBudget();
 }
 function pendingDecisions() {
@@ -615,7 +623,9 @@ function confirmMeasure() {
 }
 async function requestJson(url, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
+  // Result routes may include a model call (NVIDIA alone can take 45 seconds).
+  const timeoutMs = url === API.catalog ? 30000 : 75000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -965,7 +975,14 @@ function openPlannerAtCatalog(view) {
     title.focus({ preventScroll: true });
   });
 }
+function showVerificationScenario() {
+  if (!state.catalog || state.busy) return;
+  setDecisions(VERIFICATION_DECISIONS, "Проверочный пакет загружен. Сервер рассчитывает его по обычным правилам.");
+  setStage("planner");
+  calculate();
+}
 $("start-shift").addEventListener("click", () => openPlannerAtCatalog("all"));
+$("example-scenario").addEventListener("click", showVerificationScenario);
 $("district-action").addEventListener("click", () => {
   if (state.stage === "report") {
     setStage("planner");
