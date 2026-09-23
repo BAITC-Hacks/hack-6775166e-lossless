@@ -3,7 +3,7 @@
 // The server owns simulation and Score. This interface only composes decisions
 // and displays catalogue fields and server results.
 const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change" };
-const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0 };
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
@@ -11,6 +11,8 @@ const categoryIcons = { "Транспорт": "bus", "Экология": "leaf",
 const categoryLabels = { "Соцсфера": "Соцсфера", "Экология": "Экология", "Сервисы": "Сервисы" };
 const measureById = (id) => state.measures.find((measure) => measure.id === id);
 const districtNames = () => Object.keys(state.catalog?.districts || {});
+const weakNeeds = (name) => Object.entries(state.catalog?.districts?.[name]?.indicators || {})
+  .filter(([, value]) => finite(value)).sort((a, b) => a[1] - b[1]).slice(0, 2);
 const budget = () => finite(state.catalog?.budget) ? state.catalog.budget : 100;
 const horizon = () => finite(state.catalog?.horizon_quarters) ? state.catalog.horizon_quarters : 8;
 const city = (measure) => measure.scope === "city";
@@ -52,8 +54,12 @@ function syncNavigation() {
 function setStage(stage) {
   if (!state.catalog || !["briefing", "planner", "report"].includes(stage) || stage === "report" && !state.result) return;
   state.stage = stage;
+  $("app").dataset.stage = stage;
   ["briefing", "planner", "report"].forEach((name) => { $(`stage-${name}`).hidden = name !== stage; });
   syncNavigation();
+  renderDistrictRail();
+  renderInspector();
+  syncScene();
   window.scrollTo({ top: 0, behavior: "instant" });
   const heading = $(`stage-${stage}`).querySelector("h1");
   heading.setAttribute("tabindex", "-1");
@@ -91,6 +97,8 @@ function validate(decisions, requireFive = false) {
 }
 function setDecisions(decisions, message) {
   if (locked()) return;
+  state.hoverMeasureId = null;
+  state.resultView = "after";
   state.decisions = decisions.map((item) => ({ measure_id: item.measure_id, district: item.district }));
   state.revision += 1;
   state.result = null;
@@ -99,41 +107,110 @@ function setDecisions(decisions, message) {
   $("plan-errors").hidden = true;
   syncNavigation();
   renderPlanner();
+  renderDistrictRail(); renderInspector(); syncScene();
   notice("");
   if (message) announce(message);
+}
+function displayDistrict(name) {
+  const baseline = state.catalog?.districts?.[name];
+  const after = state.stage === "report" && state.resultView === "after" && state.result?.districts?.[name];
+  return after || baseline;
+}
+function syncScene() {
+  if (!state.catalog) return;
+  const focus = state.pending?.measureId || state.hoverMeasureId;
+  const measure = focus && measureById(focus);
+  const affected = measure ? (city(measure) ? districtNames() : [state.pending?.district || state.selectedDistrict].filter(Boolean)) : [];
+  const coverage = $("coverage-districts");
+  coverage.replaceChildren();
+  $("coverage-label").textContent = measure ? `${measure.id} · ${city(measure) ? "весь город" : state.pending?.district || state.selectedDistrict}` : "Наведите на меру";
+  districtNames().forEach((name) => {
+    const chip = node("span", name, `coverage-chip${affected.includes(name) ? " is-affected" : ""}${name === state.selectedDistrict ? " is-selected" : ""}`);
+    coverage.append(chip);
+  });
+  if (!state.scene) return;
+  try {
+    state.scene.update({
+      districts: state.catalog.districts,
+      selected: state.selectedDistrict,
+      affected,
+      resultDistricts: state.result?.districts || null,
+      mode: state.stage === "report" && state.resultView === "after" && state.result ? "result" : "baseline"
+    });
+  } catch (error) { console.error("City scene update failed", error); }
+}
+function renderDistrictRail() {
+  const host = $("district-cards");
+  host.replaceChildren();
+  districtNames().forEach((name, index) => {
+    const source = displayDistrict(name);
+    const selected = name === state.selectedDistrict;
+    const button = node("button", null, `rail-district${selected ? " is-active" : ""}`);
+    button.type = "button";
+    button.dataset.district = name;
+    button.setAttribute("aria-pressed", String(selected));
+    button.setAttribute("aria-label", `${name}, качество района ${format(source?.score)}, ${selected ? "выбран" : "выбрать"}`);
+    button.append(node("span", `0${index + 1}`, "rail-index"), node("strong", name), node("b", format(source?.score)));
+    button.addEventListener("click", () => selectDistrict(name, true));
+    host.append(button);
+  });
+}
+function renderInspector() {
+  const name = state.selectedDistrict;
+  if (!name || !state.catalog?.districts?.[name]) return;
+  const baseline = state.catalog.districts[name];
+  const current = displayDistrict(name);
+  const index = districtNames().indexOf(name);
+  $("inspector-index").textContent = `0${index + 1} / 05`;
+  $("district-inspector-title").textContent = name.toUpperCase();
+  $("inspector-profile").textContent = baseline.profile || "Исходные показатели района.";
+  $("inspector-score").textContent = format(current?.score);
+  $("inspector-score-fill").style.width = `${Math.max(0, Math.min(100, current?.score || 0))}%`;
+  const resultMode = state.stage === "report" && Boolean(state.result);
+  const cityAfter = resultMode && state.resultView === "after" && finite(state.result?.score);
+  $("deck-base-score").textContent = cityAfter ? format(state.result.score) : format(state.catalog.base_score);
+  $("deck-score-label").textContent = cityAfter ? `город после · было ${format(state.catalog.base_score)}` : "город сейчас / 100";
+  $("result-view-toggle").hidden = !resultMode;
+  $("view-before").setAttribute("aria-pressed", String(state.resultView === "before"));
+  $("view-after").setAttribute("aria-pressed", String(state.resultView === "after"));
+  $("inspector-score-label").textContent = resultMode ? `Качество района · ${state.resultView === "after" ? "после" : "до"}` : "Качество жизни района";
+  const change = $("inspector-score-change");
+  const afterScore = state.result?.districts?.[name]?.score;
+  change.hidden = !resultMode || state.resultView !== "after" || !finite(afterScore);
+  change.textContent = finite(afterScore) ? `Было ${format(baseline.score)} → стало ${format(afterScore)}` : "";
+  $("inspector-needs-label").textContent = resultMode ? "Слабые места до ваших решений" : "Два самых слабых показателя";
+  const host = $("inspector-needs"); host.replaceChildren();
+  weakNeeds(name).forEach(([key, baselineValue]) => {
+    const value = finite(current?.indicators?.[key]) ? current.indicators[key] : baselineValue;
+    const item = node("div", null, "need-item");
+    const label = node("div", null, "need-label");
+    label.append(node("span", indicatorName(key)), node("b", format(value, 0)));
+    const meter = node("div", null, "need-meter");
+    const fill = node("span"); fill.style.width = `${Math.max(0, Math.min(100, value))}%`; meter.append(fill);
+    item.append(label, meter);
+    if (resultMode && state.resultView === "after") {
+      const delta = state.result?.deltas?.[name]?.[key];
+      if (finite(delta) && delta !== 0) item.append(node("small", `${delta > 0 ? "+" : ""}${format(delta, 1)} после мер`, delta < 0 ? "need-delta is-negative" : "need-delta"));
+    }
+    host.append(item);
+  });
+  const action = $("district-action");
+  action.querySelector("span").textContent = resultMode ? "Изменить решения" : `Меры для района ${name}`;
+}
+function selectDistrict(name, restoreFocus = false) {
+  if (!state.catalog?.districts?.[name]) return;
+  state.selectedDistrict = name;
+  renderDistrictRail(); renderInspector(); syncScene();
+  if (state.stage === "planner") renderMeasures();
+  if (restoreFocus) $("district-cards").querySelector(`[data-district="${name}"]`)?.focus({ preventScroll: true });
+  announce(`Выбран район ${name}. В досье показаны два слабых показателя.`);
 }
 function renderBriefing() {
   $("briefing-budget").textContent = format(budget(), 0);
   $("briefing-horizon").textContent = format(horizon(), 0);
   $("base-score").textContent = format(state.catalog.base_score);
-  const host = $("district-cards");
-  host.replaceChildren();
-  const entries = Object.entries(state.catalog.districts);
-  const knownScores = entries.filter(([, district]) => finite(district.score));
-  const lowest = knownScores.length ? Math.min(...knownScores.map(([, district]) => district.score)) : null;
-  entries.forEach(([name, district], index) => {
-    const vulnerable = finite(lowest) && district.score === lowest;
-    const card = node("article", null, `district-card${vulnerable ? " is-vulnerable" : ""}`);
-    const top = node("div", null, "district-card-top");
-    top.append(node("span", `РАЙОН 0${index + 1}`, "district-index"));
-    if (vulnerable) top.append(node("span", "Больше внимания", "district-tag"));
-    const heading = node("div", null, "district-card-top");
-    heading.append(node("h3", name), node("span", format(district.score), "district-base"));
-    card.append(top, heading, node("p", typeof district.profile === "string" ? district.profile : "Изучите исходные показатели района.", "district-profile"));
-    const meter = node("div", null, "district-card-meter");
-    const fill = node("span");
-    fill.style.width = `${finite(district.score) ? Math.max(0, Math.min(100, district.score)) : 0}%`;
-    meter.setAttribute("aria-hidden", "true");
-    meter.append(fill);
-    const needs = node("div", null, "district-needs");
-    Object.entries(district.indicators || {}).filter(([, value]) => finite(value)).sort((a, b) => a[1] - b[1]).slice(0, 2).forEach(([key, value]) => {
-      const line = node("div", null, `district-need${value < 40 ? " is-critical" : ""}`);
-      line.append(node("span", indicatorName(key)), node("b", format(value, 0)));
-      needs.append(line);
-    });
-    card.append(meter, needs);
-    host.append(card);
-  });
+  $("deck-base-score").textContent = format(state.catalog.base_score);
+  renderDistrictRail(); renderInspector(); syncScene();
 }
 function renderCategories() {
   const host = $("category-tabs");
@@ -156,10 +233,30 @@ function renderCategories() {
   });
 }
 function renderMeasures() {
+  state.hoverMeasureId = null;
+  syncScene();
   const host = $("measure-cards");
   host.replaceChildren();
-  const visible = state.measures.filter((item) => state.category === "Все" || item.category === state.category);
+  const weak = new Set(weakNeeds(state.selectedDistrict).map(([key]) => key));
+  const relevant = (measure) => city(measure) || Object.entries(measure.full_effects || {}).some(([key, value]) => weak.has(key) && value > 0);
+  const visible = state.measures.filter((item) =>
+    (state.category === "Все" || item.category === state.category)
+    && (state.measureView === "all" || relevant(item)));
+  visible.sort((a, b) => Number(relevant(b)) - Number(relevant(a)) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
   $("catalog-count").textContent = `${visible.length} из ${state.measures.length} мер`;
+  $("measure-context").textContent = state.measureView === "district"
+    ? `Меры, улучшающие слабые показатели района ${state.selectedDistrict}, и все городские меры.`
+    : "Все пять направлений и 14 мер. Районные меры назначаются при выборе.";
+  $("view-district-measures").setAttribute("aria-pressed", String(state.measureView === "district"));
+  $("view-all-measures").setAttribute("aria-pressed", String(state.measureView === "all"));
+  if (!visible.length) {
+    const empty = node("div", null, "measure-empty");
+    empty.append(node("strong", "В этой категории нет мер под две главные задачи района."));
+    const showAll = node("button", "Показать все 14 мер", "text-button");
+    showAll.type = "button";
+    showAll.addEventListener("click", () => { state.measureView = "all"; state.category = "Все"; renderCategories(); renderMeasures(); });
+    empty.append(showAll); host.append(empty); return;
+  }
   visible.forEach((measure) => {
     const selected = state.decisions.some((decision) => decision.measure_id === measure.id);
     const card = node("article", null, `measure-card${selected ? " is-selected" : ""}`);
@@ -173,19 +270,27 @@ function renderMeasures() {
     top.append(symbol, price);
     const meta = node("div", null, "measure-meta");
     const scope = node("span");
-    scope.append(icon("city"), document.createTextNode(city(measure) ? "Весь город" : "Один район"));
+    scope.append(icon("city"), document.createTextNode(city(measure) ? "Все пять районов" : state.selectedDistrict));
     meta.append(scope);
     if (finite(measure.lag_quarters)) {
       const lag = node("span");
-      lag.append(icon("clock"), document.createTextNode(`Лаг ${measure.lag_quarters} кв.`));
+      lag.append(icon("clock"), document.createTextNode(`Эффект через ${measure.lag_quarters} кв.`));
       meta.append(lag);
     }
+    const match = Object.entries(measure.full_effects || {}).filter(([key, value]) => weak.has(key) && value > 0).map(([key]) => key);
+    if (match.length) card.append(node("span", `К задаче: ${match.map(indicatorName).join(" · ")}`, "measure-relevance"));
     const button = node("button", null, "measure-select");
     button.type = "button";
     button.disabled = selected || locked();
     button.setAttribute("aria-label", selected ? `${measure.id} уже в пакете` : `Выбрать ${measure.id}: ${measure.name}`);
-    button.append(node("span", selected ? "В вашем пакете" : "Рассмотреть меру"), icon(selected ? "check" : "plus"));
+    button.append(node("span", selected ? "В вашем пакете" : "Направить меру"), icon(selected ? "check" : "plus"));
     button.addEventListener("click", () => openMeasure(measure.id));
+    const highlight = () => { state.hoverMeasureId = measure.id; syncScene(); };
+    const unhighlight = () => { if (state.hoverMeasureId === measure.id) { state.hoverMeasureId = null; syncScene(); } };
+    card.addEventListener("pointerenter", highlight);
+    card.addEventListener("pointerleave", unhighlight);
+    card.addEventListener("focusin", highlight);
+    card.addEventListener("focusout", (event) => { if (!card.contains(event.relatedTarget)) unhighlight(); });
     card.append(top, node("p", `${measure.id} / ${categoryLabels[measure.category] || measure.category}`, "measure-category"), node("h3", measure.name), meta, button);
     host.append(card);
   });
@@ -232,6 +337,8 @@ function renderSlots() {
 function updateBudget() {
   const spent = costOf(state.decisions);
   const missing = 5 - state.decisions.length;
+  $("deck-count").textContent = `${state.decisions.length}/5`;
+  $("deck-budget").textContent = `${format(spent, 0)}/${format(budget(), 0)}`;
   $("mobile-plan-count").textContent = `${state.decisions.length} из 5 решений`;
   $("mobile-plan-budget").textContent = `${format(spent, 0)} / ${format(budget(), 0)} ед.`;
   $("decision-count").textContent = `${state.decisions.length} / 5`;
@@ -277,14 +384,19 @@ function openMeasure(measureId, editingIndex = null) {
   if (locked()) return;
   const measure = measureById(measureId);
   if (!measure) return;
-  state.pending = { measureId, editingIndex, district: editingIndex !== null ? state.decisions[editingIndex].district : null };
+  state.pending = { measureId, editingIndex, district: city(measure) ? null : editingIndex !== null ? state.decisions[editingIndex].district : state.selectedDistrict };
+  syncScene();
   $("measure-category").textContent = `${measure.id} / ${categoryLabels[measure.category] || measure.category}`;
   $("measure-title").textContent = measure.name;
   const facts = $("measure-facts");
   facts.replaceChildren();
   const price = node("span"); price.append(node("strong", format(measure.cost, 0)), document.createTextNode("ед. бюджета"));
   facts.append(price);
-  if (finite(measure.lag_quarters)) facts.append(node("span", `Начало эффекта через ${measure.lag_quarters} кв.`));
+  if (finite(measure.lag_quarters)) {
+    const lag = node("span", null, "lag-fact");
+    lag.append(node("strong", String(measure.lag_quarters)), document.createTextNode(`из ${horizon()} кварталов до эффекта`));
+    facts.append(lag);
+  }
   const effects = $("measure-effects"); effects.replaceChildren();
   const effectEntries = Object.entries(measure.full_effects || {}).filter(([, value]) => finite(value));
   effectEntries.forEach(([key, value]) => {
@@ -301,13 +413,14 @@ function openMeasure(measureId, editingIndex = null) {
     const input = document.createElement("input");
     input.type = "radio"; input.name = "measure-district"; input.value = name;
     input.checked = state.pending.district === name;
-    input.addEventListener("change", () => { state.pending.district = name; updatePending(); });
+    input.addEventListener("change", () => { state.pending.district = name; selectDistrict(name); updatePending(); syncScene(); });
     label.append(input, node("span", name), node("small", format(state.catalog.districts[name].score)));
     options.append(label);
   });
   $("confirm-measure").replaceChildren(document.createTextNode(editingIndex === null ? "Включить в пакет" : "Сохранить район"), icon(editingIndex === null ? "plus" : "check"));
   updatePending();
   $("measure-dialog").showModal();
+  syncScene();
   const focusTarget = options.querySelector("input:checked") || options.querySelector("input") || $("confirm-measure");
   if (!focusTarget.disabled) focusTarget.focus();
 }
@@ -337,7 +450,7 @@ function showPlanErrors(errors) {
   const list = node("ul");
   errors.forEach((error) => list.append(node("li", typeof error === "string" ? error : "Сервер отклонил пакет решений.")));
   host.append(list); host.hidden = false;
-  state.result = null; syncNavigation();
+  state.result = null; syncNavigation(); renderDistrictRail(); renderInspector(); syncScene();
   announce("Пакет не подписан. Проверьте причины рядом с распоряжениями.");
   host.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -400,6 +513,7 @@ async function calculate() {
   const revision = state.revision;
   const decisions = state.decisions.map((item) => ({ ...item }));
   state.result = null; state.proposal = null; $("comparison").hidden = true;
+  renderDistrictRail(); renderInspector(); syncScene();
   syncNavigation(); notice(""); $("plan-errors").hidden = true;
   setBusy("simulate"); announce("Проверяем распоряжения и готовим доклад.");
   try {
@@ -409,6 +523,7 @@ async function calculate() {
       showPlanErrors(Array.isArray(result?.errors) && result.errors.length ? result.errors : ["Сервер не подтвердил результат. Попробуйте ещё раз."]); return;
     }
     state.result = result;
+    state.resultView = "after";
     renderReport(result, decisions);
     setStage("report"); announce(`Пять распоряжений подписаны. Итоговый Score ${format(result.score)}.`);
   } catch (error) {
@@ -546,8 +661,18 @@ async function start() {
     if (!measures.length || measures.some((item) => typeof item.name !== "string" || typeof item.category !== "string" || !finite(item.cost) || !["city", "district"].includes(item.scope))) throw new Error("Invalid measures");
     state.catalog = catalog;
     state.measures = measures.sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+    state.selectedDistrict = Object.entries(catalog.districts)
+      .filter(([, value]) => finite(value?.score))
+      .sort((a, b) => a[1].score - b[1].score)[0]?.[0] || Object.keys(catalog.districts)[0];
     renderBriefing(); renderPlanner(); syncNavigation();
     $("app").hidden = false;
+    requestAnimationFrame(() => {
+      const host = $("city-scene");
+      if (typeof window.createCityScene === "function") {
+        try { state.scene?.destroy(); state.scene = window.createCityScene(host, { onSelect: (name) => selectDistrict(name) }); $("app").classList.add("has-scene"); syncScene(); }
+        catch (error) { console.error("City scene unavailable", error); host.textContent = "Выберите район в строке под схемой."; }
+      } else host.textContent = "Выберите район в строке под схемой.";
+    });
   } catch (error) {
     console.error("Catalogue request failed", error);
     $("load-error-text").textContent = "Исходные данные города недоступны. Проверьте, что приложение запущено, и повторите попытку.";
@@ -556,7 +681,30 @@ async function start() {
 }
 
 document.querySelectorAll("[data-stage]").forEach((button) => button.addEventListener("click", () => setStage(button.dataset.stage)));
-$("start-shift").addEventListener("click", () => setStage("planner"));
+function openPlannerAtCatalog(view) {
+  state.measureView = view;
+  setStage("planner");
+  renderMeasures();
+  requestAnimationFrame(() => {
+    const title = $("catalog-title");
+    title.setAttribute("tabindex", "-1");
+    title.scrollIntoView({ block: "start", behavior: "instant" });
+    title.focus({ preventScroll: true });
+  });
+}
+$("start-shift").addEventListener("click", () => openPlannerAtCatalog("all"));
+$("district-action").addEventListener("click", () => {
+  if (state.stage === "report") {
+    setStage("planner");
+    requestAnimationFrame(() => $("portfolio-title").scrollIntoView({ block: "start", behavior: "instant" }));
+    return;
+  }
+  openPlannerAtCatalog("district");
+});
+$("view-district-measures").addEventListener("click", () => { state.measureView = "district"; renderMeasures(); $("view-district-measures").focus({ preventScroll: true }); });
+$("view-all-measures").addEventListener("click", () => { state.measureView = "all"; renderMeasures(); $("view-all-measures").focus({ preventScroll: true }); });
+$("view-before").addEventListener("click", () => { state.resultView = "before"; renderDistrictRail(); renderInspector(); syncScene(); });
+$("view-after").addEventListener("click", () => { state.resultView = "after"; renderDistrictRail(); renderInspector(); syncScene(); });
 $("retry-catalog").addEventListener("click", start);
 $("confirm-measure").addEventListener("click", confirmMeasure);
 $("submit-plan").addEventListener("click", calculate);
@@ -576,5 +724,5 @@ document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener(
   const rect = dialog.getBoundingClientRect();
   if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
 }));
-$("measure-dialog").addEventListener("close", () => { state.pending = null; });
+$("measure-dialog").addEventListener("close", () => { state.pending = null; state.hoverMeasureId = null; syncScene(); });
 start();
