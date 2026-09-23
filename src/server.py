@@ -163,7 +163,7 @@ def _fallback_explanation(result):
         + f"Слабейший район после мер — {weakest[0]} ({weakest[1]['score']:.2f}). "
         + f"Потрачено {result['cost']} из 100; остаток не повышает Score."
     )
-    return {"text": text, "source": "computed_facts"}
+    return {"text": text, "source": "computed_facts", "reason": "model_unavailable"}
 
 
 def _explain(result):
