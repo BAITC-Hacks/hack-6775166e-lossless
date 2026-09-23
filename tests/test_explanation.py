@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from src.explanation import explain
@@ -12,7 +13,10 @@ RESULT = {
     "score": 56.54307,
     "cost": 95,
     "remaining_budget": 5,
-    "districts": {"Нура": {"score": 48.1}, "Есиль": {"score": 61.2}},
+    "districts": {
+        "Нура": {"score": 48.1, "indicators": {"T2": 40.0, "S1": 48.0}},
+        "Есиль": {"score": 61.2, "indicators": {"T2": 62.0, "S1": 60.0}},
+    },
     "deltas": {"Нура": {"S1": 10.0, "T1": -1.5}, "Есиль": {"S1": 0.0}},
     "contributions": [{"measure_id": "M7", "lag_factor": 0.625}],
     "applied_synergies": [{"measures": ["M10", "M12"], "district": "Нура", "indicator": "B1", "bonus": 2}],
@@ -41,7 +45,24 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(answer["source"], "computed_facts")
         self.assertIn("56,54", answer["text"])
         self.assertIn("95 из бюджета 100", answer["text"])
-        self.assertIn("Нура", answer["text"])
+        self.assertIn("Нура (48,10)", answer["text"])
+        self.assertIn("T2 (40,00)", answer["text"])
+
+    def test_plan_specific_residual_risk_and_budget_tradeoff(self):
+        plan = deepcopy(RESULT)
+        plan["score"] = 57.236735
+        plan["cost"] = 98
+        plan["remaining_budget"] = 2
+        plan["districts"]["Нура"] = {
+            "score": 54.0875, "indicators": {"S1": 40.625, "T2": 49.0}
+        }
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "", "NVIDIA_MODEL": "",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}):
+            answer = explain(plan)
+        self.assertIn("Нура (54,09)", answer["text"])
+        self.assertIn("S1 (40,62)", answer["text"])
+        self.assertIn("98 из бюджета 100; остаток 2", answer["text"])
+        self.assertNotIn("T2 (40,00)", answer["text"])
 
     def test_model_can_only_select_existing_facts(self):
         selected = {"strengths": ["strength_indicator"], "risks": ["risk_negative"],
@@ -53,6 +74,7 @@ class ExplanationTests(unittest.TestCase):
             answer = explain(RESULT)
         self.assertEqual(answer["source"], "model")
         self.assertIn("+10,00", answer["text"])
+        self.assertIn("T2 (40,00)", answer["text"])
         self.assertNotIn("56,54", answer["text"])
         sent = json.loads(mock_open.call_args.args[0].data)
         self.assertEqual(sent["model"], "test-model")
@@ -61,7 +83,7 @@ class ExplanationTests(unittest.TestCase):
 
     def test_fabricated_number_is_not_displayed(self):
         response = {"output": [{"type": "message", "content": [
-            {"type": "output_text", "text": '{"strengths":["Score 999"],"risks":["risk_weakest"],"tradeoffs":["tradeoff_budget"]}'}]}]}
+            {"type": "output_text", "text": '{"strengths":["Score 999"],"risks":["risk_residual"],"tradeoffs":["tradeoff_budget"]}'}]}]}
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "test-model"}), \
                 patch("src.explanation.request.urlopen", return_value=FakeResponse(response)):
             answer = explain(RESULT)
@@ -69,7 +91,7 @@ class ExplanationTests(unittest.TestCase):
         self.assertNotIn("999", answer["text"])
 
     def test_nvidia_has_priority_and_selects_only_verified_facts(self):
-        chosen = {"strengths": ["strength_synergy"], "risks": ["risk_weakest"],
+        chosen = {"strengths": ["strength_synergy"], "risks": ["risk_negative"],
                   "tradeoffs": ["tradeoff_lag"]}
         response = {"choices": [{"message": {"content": json.dumps(chosen)}}]}
         env = {"NVIDIA_API_KEY": "test-nvidia-key", "NVIDIA_MODEL": "explicit/model-id",
@@ -80,6 +102,8 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(answer["source"], "model")
         self.assertEqual(answer["provider"], "nvidia")
         self.assertIn("M10, M12", answer["text"])
+        self.assertIn("T2 (40,00)", answer["text"])
+        self.assertIn("95 из бюджета 100", answer["text"])
         self.assertNotIn("56,54", answer["text"])
         req = mock_open.call_args.args[0]
         sent = json.loads(req.data)
