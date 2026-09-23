@@ -169,7 +169,7 @@ function renderInspector() {
   const resultMode = state.stage === "report" && Boolean(state.result);
   const cityAfter = resultMode && state.resultView === "after" && finite(state.result?.score);
   $("deck-base-score").textContent = cityAfter ? format(state.result.score) : format(state.catalog.base_score);
-  $("deck-score-label").textContent = cityAfter ? `город после · было ${format(state.catalog.base_score)}` : "город сейчас / 100";
+  $("deck-score-label").textContent = cityAfter ? `город после · было ${format(state.catalog.base_score)}` : resultMode ? "город до решений / 100" : "город сейчас / 100";
   $("result-view-toggle").hidden = !resultMode;
   $("view-before").setAttribute("aria-pressed", String(state.resultView === "before"));
   $("view-after").setAttribute("aria-pressed", String(state.resultView === "after"));
@@ -206,6 +206,12 @@ function selectDistrict(name, restoreFocus = false) {
   renderDistrictRail(); renderInspector(); syncScene();
   if (state.stage === "planner") renderMeasures();
   if (restoreFocus) $("district-cards").querySelector(`[data-district="${name}"]`)?.focus({ preventScroll: true });
+  if (!state.pending && window.matchMedia("(max-width: 850px)").matches) requestAnimationFrame(() => {
+    const title = $("district-inspector-title");
+    title.setAttribute("tabindex", "-1");
+    title.scrollIntoView({ block: "start", behavior: "instant" });
+    title.focus({ preventScroll: true });
+  });
   announce(`Выбран район ${name}. В досье показаны два слабых показателя.`);
 }
 function renderBriefing() {
