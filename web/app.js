@@ -3,7 +3,7 @@
 // The server owns simulation and Score. This interface only composes decisions
 // and displays catalogue fields and server results.
 const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change" };
-const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null };
+const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0, selectedDistrict: null, measureView: "district", hoverMeasureId: null, resultView: "after", scene: null, drag: null };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
@@ -126,8 +126,12 @@ function syncScene() {
   $("coverage-label").textContent = measure ? `${measure.id} · ${city(measure) ? "весь город" : state.pending?.district || state.selectedDistrict}` : "Наведите на меру";
   districtNames().forEach((name) => {
     const chip = node("span", name, `coverage-chip${affected.includes(name) ? " is-affected" : ""}${name === state.selectedDistrict ? " is-selected" : ""}`);
+    chip.dataset.dropDistrict = name;
     coverage.append(chip);
   });
+  const cityChip = node("span", "Весь город", `coverage-chip coverage-city${measure && city(measure) ? " is-affected" : ""}`);
+  cityChip.dataset.dropCity = "true";
+  coverage.append(cityChip);
   if (!state.scene) return;
   try {
     state.scene.update({
@@ -148,6 +152,7 @@ function renderDistrictRail() {
     const button = node("button", null, `rail-district${selected ? " is-active" : ""}`);
     button.type = "button";
     button.dataset.district = name;
+    button.dataset.dropDistrict = name;
     button.setAttribute("aria-pressed", String(selected));
     button.setAttribute("aria-label", `${name}, качество района ${format(source?.score)}, ${selected ? "выбран" : "выбрать"}`);
     button.append(node("span", `0${index + 1}`, "rail-index"), node("strong", name), node("b", format(source?.score)));
@@ -241,6 +246,151 @@ function renderCategories() {
     host.append(button);
   });
 }
+let dragToastTimer;
+function dragMessage(message, error = false) {
+  const toast = $("drag-toast");
+  clearTimeout(dragToastTimer);
+  toast.textContent = message;
+  toast.classList.toggle("is-error", error);
+  toast.hidden = false;
+  dragToastTimer = setTimeout(() => { toast.hidden = true; }, 3200);
+  announce(message);
+}
+function dropError(measure, target) {
+  if (!target) return "Перетащите меру на район или на цель «Весь город».";
+  if (city(measure) && target.kind !== "city") return "Эта мера действует на весь город. Перетащите её на «Весь город».";
+  if (!city(measure) && target.kind !== "district") return "Этой мере нужен конкретный район. Перетащите её на один из пяти районов.";
+  return validate([...state.decisions, { measure_id: measure.id, district: target.kind === "city" ? null : target.name }])[0] || "";
+}
+function renderDropBoard(measure) {
+  const host = $("drop-targets");
+  host.replaceChildren();
+  const targets = [...districtNames().map((name) => ({ kind: "district", name })), { kind: "city", name: "Весь город" }];
+  targets.forEach((target, index) => {
+    const button = node("button", null, "drop-target");
+    button.type = "button";
+    if (target.kind === "city") button.dataset.dropCity = "true";
+    else button.dataset.dropDistrict = target.name;
+    const error = dropError(measure, target);
+    if (error) { button.classList.add("is-blocked"); button.title = error; }
+    button.setAttribute("aria-label", `${target.name}${error ? `. ${error}` : ". Доступная цель"}`);
+    button.append(node("small", target.kind === "city" ? "◎" : `0${index + 1}`), node("strong", target.name));
+    host.append(button);
+  });
+  $("drop-board-hint").textContent = city(measure) ? "Цель: весь город" : "Выберите один из пяти районов";
+}
+function targetAt(clientX, clientY) {
+  const element = document.elementFromPoint(clientX, clientY);
+  const tile = element?.closest("[data-drop-district], [data-drop-city]");
+  if (tile?.dataset.dropCity) return { kind: "city", name: "Весь город", element: tile };
+  if (tile?.dataset.dropDistrict) return { kind: "district", name: tile.dataset.dropDistrict, element: tile };
+  try {
+    const name = state.scene?.pickDistrict?.(clientX, clientY);
+    if (name && districtNames().includes(name)) return { kind: "district", name, element: null };
+  } catch (error) { console.error("City pick failed", error); }
+  return null;
+}
+function moveGhost(drag, clientX, clientY) {
+  const rect = drag.ghost.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - rect.width - 8, Math.max(8, clientX + 15));
+  const top = drag.pointerType === "mouse" ? clientY + 18 : clientY - rect.height - 22;
+  drag.ghost.style.left = `${left}px`;
+  drag.ghost.style.top = `${Math.max(8, Math.min(window.innerHeight - rect.height - 8, top))}px`;
+}
+function previewDrop(drag, clientX, clientY) {
+  const target = targetAt(clientX, clientY);
+  const key = target ? `${target.kind}:${target.name}` : "";
+  if (drag.targetKey !== key || drag.target?.element !== target?.element) {
+    document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop"));
+    drag.targetKey = key;
+    drag.target = target;
+    const error = dropError(drag.measure, target);
+    drag.ghost.classList.toggle("is-denied", Boolean(target && error));
+    drag.ghost.classList.toggle("is-over", Boolean(target && !error));
+    if (target?.element) target.element.classList.add("is-hot-drop");
+    if (key) $("drop-board-hint").textContent = error || `${drag.measure.id} → ${target.name}`;
+    else $("drop-board-hint").textContent = city(drag.measure) ? "Цель: весь город" : "Выберите один из пяти районов";
+    try { state.scene?.setDropPreview?.(target?.kind === "district" ? target.name : null); }
+    catch (error) { console.error("City drop preview failed", error); }
+  }
+}
+function startMeasureDrag(drag, clientX, clientY) {
+  drag.started = true;
+  renderDropBoard(drag.measure);
+  $("drop-board").hidden = false;
+  document.body.classList.add("is-dragging-measure");
+  drag.source.classList.add("is-being-dragged");
+  drag.ghost = node("div", null, "drag-ghost");
+  drag.ghost.append(node("small", `${drag.measure.id} / ${drag.measure.category}`), node("strong", drag.measure.name), node("b", `${format(drag.measure.cost, 0)} ед.`));
+  document.body.append(drag.ghost);
+  state.hoverMeasureId = drag.measure.id;
+  syncScene();
+  moveGhost(drag, clientX, clientY);
+  previewDrop(drag, clientX, clientY);
+}
+function finishMeasureDrag(event, cancelled = false) {
+  const drag = state.drag;
+  if (!drag || event?.pointerId !== undefined && drag.pointerId !== event.pointerId) return;
+  state.drag = null;
+  try { drag.source.releasePointerCapture?.(drag.pointerId); } catch (_) { /* capture may already be released */ }
+  if (!drag.started) {
+    if (!cancelled && drag.pointerType === "mouse" && !drag.fromGrip) openMeasure(drag.measure.id);
+    return;
+  }
+  if (drag.fromGrip) {
+    drag.source.dataset.justDragged = "true";
+    setTimeout(() => { delete drag.source.dataset.justDragged; }, 450);
+  }
+  if (event && !cancelled) previewDrop(drag, event.clientX, event.clientY);
+  const target = cancelled ? null : drag.target;
+  const error = cancelled ? "" : dropError(drag.measure, target);
+  document.body.classList.remove("is-dragging-measure");
+  $("drop-board").hidden = true;
+  document.querySelectorAll(".is-hot-drop").forEach((item) => item.classList.remove("is-hot-drop"));
+  drag.source.classList.remove("is-being-dragged");
+  state.hoverMeasureId = null;
+  try { state.scene?.setDropPreview?.(null); } catch (_) { /* optional scene API */ }
+  if (drag.ghost) {
+    if (target && !error && target.element) {
+      const rect = target.element.getBoundingClientRect();
+      drag.ghost.classList.add("is-snapping");
+      drag.ghost.style.left = `${rect.left + rect.width / 2 - drag.ghost.offsetWidth / 2}px`;
+      drag.ghost.style.top = `${rect.top + rect.height / 2 - drag.ghost.offsetHeight / 2}px`;
+      setTimeout(() => drag.ghost.remove(), 180);
+    } else drag.ghost.remove();
+  }
+  if (!cancelled && error) { notice(error, true); dragMessage(error, true); }
+  else if (!cancelled && target) {
+    const decision = { measure_id: drag.measure.id, district: target.kind === "city" ? null : target.name };
+    const next = [...state.decisions, decision];
+    setDecisions(next);
+    const message = `${drag.measure.id} направлена: ${target.name}. ${next.length} из 5 решений, ${format(costOf(next), 0)} из ${format(budget(), 0)} ед. бюджета.`;
+    dragMessage(message);
+  } else syncScene();
+}
+function beginMeasureDrag(measureId, event, source, fromGrip = false) {
+  if (state.drag || locked() || state.stage !== "planner" || event.button !== 0 && event.pointerType === "mouse") return;
+  if (event.pointerType !== "mouse" && !fromGrip) return;
+  const measure = measureById(measureId);
+  if (!measure || state.decisions.some((item) => item.measure_id === measureId)) return;
+  if (event.pointerType === "mouse" && !fromGrip && event.target.closest("button, a, input, select, textarea")) return;
+  state.drag = { measure, source, fromGrip, pointerId: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, started: false, target: null, targetKey: "", ghost: null };
+  if (fromGrip) event.preventDefault();
+  try { source.setPointerCapture(event.pointerId); } catch (_) { /* drag still works through window listeners */ }
+}
+window.addEventListener("pointermove", (event) => {
+  const drag = state.drag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  if (!drag.started && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < (drag.pointerType === "mouse" ? 7 : 10)) return;
+  if (!drag.started) startMeasureDrag(drag, event.clientX, event.clientY);
+  event.preventDefault();
+  moveGhost(drag, event.clientX, event.clientY);
+  previewDrop(drag, event.clientX, event.clientY);
+}, { passive: false });
+window.addEventListener("pointerup", (event) => finishMeasureDrag(event));
+window.addEventListener("pointercancel", (event) => finishMeasureDrag(event, true));
+window.addEventListener("blur", () => finishMeasureDrag(null, true));
+window.addEventListener("keydown", (event) => { if (event.key === "Escape" && state.drag) finishMeasureDrag(null, true); });
 function renderMeasures() {
   state.hoverMeasureId = null;
   syncScene();
@@ -294,13 +444,23 @@ function renderMeasures() {
     button.setAttribute("aria-label", selected ? `${measure.id} уже в пакете` : `Выбрать ${measure.id}: ${measure.name}`);
     button.append(node("span", selected ? "В вашем пакете" : "Направить меру"), icon(selected ? "check" : "plus"));
     button.addEventListener("click", () => openMeasure(measure.id));
-    const highlight = () => { state.hoverMeasureId = measure.id; syncScene(); };
-    const unhighlight = () => { if (state.hoverMeasureId === measure.id) { state.hoverMeasureId = null; syncScene(); } };
+    const grip = node("button", null, `measure-drag-grip${!selected && state.decisions.length === 0 && visible[0] === measure ? " is-demo" : ""}`);
+    grip.type = "button";
+    grip.disabled = selected || locked();
+    grip.setAttribute("aria-label", `Перетащить ${measure.id}: ${measure.name}. Для обычного выбора нажмите кнопку`);
+    grip.title = "Перетащить на район или весь город";
+    grip.append(node("span", "⠿", "grip-mark"));
+    grip.addEventListener("pointerdown", (event) => beginMeasureDrag(measure.id, event, grip, true));
+    grip.addEventListener("click", () => { if (!grip.dataset.justDragged) openMeasure(measure.id); delete grip.dataset.justDragged; });
+    const actions = node("div", null, "measure-actions"); actions.append(button, grip);
+    const highlight = () => { if (!state.drag?.started) { state.hoverMeasureId = measure.id; syncScene(); } };
+    const unhighlight = () => { if (!state.drag?.started && state.hoverMeasureId === measure.id) { state.hoverMeasureId = null; syncScene(); } };
+    card.addEventListener("pointerdown", (event) => beginMeasureDrag(measure.id, event, card));
     card.addEventListener("pointerenter", highlight);
     card.addEventListener("pointerleave", unhighlight);
     card.addEventListener("focusin", highlight);
     card.addEventListener("focusout", (event) => { if (!card.contains(event.relatedTarget)) unhighlight(); });
-    card.append(top, node("p", `${measure.id} / ${categoryLabels[measure.category] || measure.category}`, "measure-category"), node("h3", measure.name), meta, button);
+    card.append(top, node("p", `${measure.id} / ${categoryLabels[measure.category] || measure.category}`, "measure-category"), node("h3", measure.name), meta, actions);
     host.append(card);
   });
 }

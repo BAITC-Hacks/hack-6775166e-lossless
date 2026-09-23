@@ -106,6 +106,8 @@
     </div>
   </main>
   <footer class="footer"><span>ПЯТЬ РАСПОРЯЖЕНИЙ <span class="footer-dot">·</span> HACKALEM 2026</span><span>Условный город. Настоящий выбор.</span></footer>
+  <div id="drop-board" class="drop-board" role="group" aria-label="Куда направить меру" hidden><div class="drop-board-heading"><strong>НАПРАВЬТЕ МЕРУ</strong><span id="drop-board-hint">Перетащите на район</span></div><div id="drop-targets" class="drop-targets"></div></div>
+  <div id="drag-toast" class="drag-toast" role="status" aria-live="polite" hidden></div>
   <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
 
   <dialog id="measure-dialog" class="measure-dialog" aria-labelledby="measure-title"><div class="dialog-top"><span id="measure-category" class="eyebrow"></span><button class="icon-button" type="button" data-close-dialog aria-label="Закрыть выбор мероприятия"><svg class="icon"><use href="#i-close"/></svg></button></div><h2 id="measure-title"></h2><div id="measure-facts" class="measure-facts"></div><p class="dialog-label">Полный эффект до учёта лага</p><div id="measure-effects" class="effect-list"></div><div id="district-choice-section"><fieldset><legend>Где реализовать распоряжение?</legend><div id="district-options" class="district-options"></div></fieldset></div><p id="city-scope-note" class="city-scope-note" hidden><svg class="icon"><use href="#i-city"/></svg> Мероприятие улучшит показатели всех пяти районов.</p><div id="measure-validation" class="dialog-validation" role="status"></div><button id="confirm-measure" class="button button-primary button-full" type="button">Включить в пакет <svg class="icon"><use href="#i-plus"/></svg></button></dialog>
