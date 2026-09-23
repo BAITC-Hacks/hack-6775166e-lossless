@@ -70,7 +70,7 @@
   }
 
   function drawInitiativeModel(ctx, project, polygon, line, item, progress, mode) {
-    const x = item.x, z = item.z, base = item.city ? -0.1 : 0.19 * progress;
+    const x = item.x, z = item.z, base = item.city ? 0.23 : 0.19 * progress;
     const s = item.city ? 0.75 : 0.78;
     const after = mode === "result" && !item.preview;
     const edge = item.preview ? COLOR.orange : COLOR.green;
@@ -190,7 +190,7 @@
         break;
     }
     const plate = p(0, .72, 0);
-    ctx.font = "700 10px Arial, sans-serif";
+    ctx.font = '700 10px "Avenir Next Condensed", "Arial Narrow", Arial, sans-serif';
     ctx.textBaseline = "middle";
     ctx.fillStyle = item.preview ? COLOR.orange : COLOR.green;
     ctx.fillRect(plate.x - 13, plate.y - 8, 26, 16);
@@ -430,15 +430,19 @@
           const index = citySlots.length;
           citySlots.push(measureId);
           x = -2.48 + index * 1.44;
-          z = 2.47;
+          z = 2.12;
         } else {
           const shape = SHAPES.find((item) => item.name === district);
           const index = districtSlots.get(district) || 0;
           districtSlots.set(district, index + 1);
-          const offsets = [[-0.49, -0.35], [0.49, -0.35], [-0.49, 0.42], [0.49, 0.42], [0, 0.56]];
-          const offset = offsets[Math.min(index, offsets.length - 1)];
-          x = shape.label[0] + offset[0];
-          z = shape.label[1] + offset[1];
+          // Keep the sculptures near distinct platform corners so the
+          // district's accessible DOM badge does not cover a packed group.
+          const vertex = index < 4 ? shape.points[index] : [
+            (shape.points[0][0] + shape.points[1][0]) / 2,
+            (shape.points[0][1] + shape.points[1][1]) / 2
+          ];
+          x = shape.label[0] * .26 + vertex[0] * .74;
+          z = shape.label[1] * .26 + vertex[1] * .74;
         }
         placed.push({ id: measureId, district, city, preview, x, z });
       };
@@ -451,9 +455,17 @@
       const items = placedInitiatives();
       if (items.some((item) => item.city)) {
         const cityColor = data.mode === "result" ? "rgba(41,77,64,.25)" : "rgba(41,77,64,.14)";
+        const rail = [[-3.02, 1.88], [2.48, 1.88], [2.48, 2.42], [-3.02, 2.42]];
+        const top = rail.map(([x, z]) => project(x, .2, z));
+        const lower = rail.map(([x, z]) => project(x, -.08, z));
+        for (let index = 0; index < rail.length; index++) {
+          const next = (index + 1) % rail.length;
+          polygon([top[index], top[next], lower[next], lower[index]], "rgba(41,77,64,.34)", "rgba(41,77,64,.45)", 1);
+        }
+        polygon(top, "rgba(220,230,180,.82)", COLOR.green, 1.4);
         SHAPES.forEach((shape) => {
           const center = project(shape.label[0], .2, shape.label[1]);
-          line(project(0, -.04, 2.43), center, cityColor, 1.2);
+          line(project(0, .21, 2.12), center, cityColor, 1.2);
         });
       }
       items.sort((a, b) => project(a.x, 0, a.z).depth - project(b.x, 0, b.z).depth)
@@ -825,7 +837,7 @@
       if (!measure) {
         const center = project(0, .08, 0);
         ctx.fillStyle = COLOR.green;
-        ctx.font = "700 21px Georgia, serif";
+        ctx.font = '700 21px "Avenir Next Condensed", "Arial Narrow", Arial, sans-serif';
         ctx.textAlign = "center";
         ctx.fillText("+", center.x, center.y + 7);
         return;

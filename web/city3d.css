@@ -75,7 +75,7 @@
   letter-spacing: 1.1px;
 }
 .city3d__brand { display: flex; align-items: center; gap: 9px; }
-.city3d__brand-name { font-family: Georgia, "Times New Roman", serif; font-size: 12px; letter-spacing: .1px; }
+.city3d__brand-name { font-family: var(--display, "Avenir Next Condensed", "Arial Narrow", Arial, sans-serif); font-size: 12px; letter-spacing: .1px; }
 .city3d__signal {
   width: 8px;
   height: 8px;
@@ -187,7 +187,7 @@
   border-radius: 3px;
   background: var(--scene-panel);
   color: var(--scene-green);
-  font: 600 18px/1 Georgia, serif;
+  font: 600 18px/1 var(--display, "Avenir Next Condensed", "Arial Narrow", Arial, sans-serif);
   cursor: pointer;
 }
 .city3d__control:hover { background: var(--scene-lime); }
@@ -307,6 +307,15 @@
   text-overflow: ellipsis;
 }
 .initiative3d.is-no-canvas .initiative3d__caption { position: relative; margin: 55px 9px 10px; }
+
+.city3d__district strong,
+.city3d__district small,
+.city3d__initiative-id,
+.city3d__initiative-state,
+.initiative3d__code,
+.initiative3d__caption {
+  font-family: var(--display, "Avenir Next Condensed", "Arial Narrow", Arial, sans-serif);
+}
 
 @media (max-width: 700px) {
   .city3d__canvas { height: 380px; touch-action: pan-y; }
