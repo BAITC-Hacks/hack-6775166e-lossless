@@ -447,8 +447,11 @@
         modeLabel.textContent = data.mode === "result" ? "ПОСЛЕ РЕШЕНИЙ" : "ИСХОДНОЕ СОСТОЯНИЕ";
         root.classList.toggle("is-result", data.mode === "result");
         root.classList.toggle("has-affected", data.affected.length > 0);
-        legendText.textContent = data.affected.length ? "ЯНТАРНЫЙ = ОХВАТ МЕРЫ" : "НАЖМИТЕ НА РАЙОН · ТЯНИТЕ ДЛЯ ОБЗОРА";
+        legendText.textContent = data.affected.length ? "ЯНТАРНЫЙ = ОХВАТ МЕРЫ" :
+          ctx ? "НАЖМИТЕ НА РАЙОН · ТЯНИТЕ ДЛЯ ОБЗОРА" : "ВЫБЕРИТЕ РАЙОН ИЗ СПИСКА";
         status.textContent = data.selected ? "Выбран район " + data.selected : "Показаны пять районов города";
+        // Keep the accessible district controls current even when Canvas is unavailable.
+        refreshLabels();
         requestDraw();
       },
       destroy() {

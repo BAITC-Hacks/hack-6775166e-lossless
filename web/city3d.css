@@ -65,6 +65,7 @@
   max-width: none;
 }
 .city3d.is-no-canvas .city3d__controls { display: none; }
+.city3d.is-no-canvas .city3d__top { z-index: 6; }
 
 .city3d__top {
   position: absolute;
