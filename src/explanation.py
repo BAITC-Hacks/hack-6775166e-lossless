@@ -45,6 +45,14 @@ def _facts(result):
             f"Синергия {', '.join(synergy['measures'])} добавила "
             f"+{_fmt(synergy['bonus'])} к {synergy['indicator']} в районе {synergy['district']}."
         )
+    for item in result.get("contributions", []):
+        effects = item.get("scaled_effects", {})
+        if effects:
+            details = ", ".join(f"{key} {value:+.2f}" for key, value in sorted(effects.items()))
+            location = item.get("district") or "весь город"
+            strengths[f"measure_{item['measure_id']}"] = (
+                f"Расчётный вклад {item['measure_id']} ({location}) в показатели: {details}."
+            )
 
     district, values = min(
         result["districts"].items(), key=lambda item: (item[1]["score"], item[0])
@@ -120,11 +128,12 @@ def _post_json(url, payload, api_key):
         return json.load(response)
 
 
-def _select_with_openai(facts, api_key, model):
+def _select_with_openai(facts, api_key, model, evidence):
     payload = {
         "model": model,
         "instructions": _INSTRUCTIONS,
-        "input": json.dumps({"candidates": facts}, ensure_ascii=False, sort_keys=True),
+        "input": json.dumps({"candidates": facts, "calculated_evidence": evidence},
+                            ensure_ascii=False, sort_keys=True),
         "store": False,
     }
     body = _post_json(_OPENAI_API_URL, payload, api_key)
@@ -137,12 +146,14 @@ def _select_with_openai(facts, api_key, model):
     return _validate_selection(output, facts)
 
 
-def _select_with_nvidia(facts, api_key, model):
+def _select_with_nvidia(facts, api_key, model, evidence):
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": _INSTRUCTIONS},
-            {"role": "user", "content": json.dumps({"candidates": facts}, ensure_ascii=False, sort_keys=True)},
+            {"role": "user", "content": json.dumps(
+                {"candidates": facts, "calculated_evidence": evidence},
+                ensure_ascii=False, sort_keys=True)},
         ],
         "stream": False,
     }
@@ -153,16 +164,8 @@ def _select_with_nvidia(facts, api_key, model):
     return _validate_selection(output, facts)
 
 
-def explain(result):
-    """Return a grounded explanation, with a transparent offline fallback.
-
-    NVIDIA_API_KEY + NVIDIA_MODEL take priority over OpenAI configuration.
-    Models are never guessed: both key and explicit model ID are required.
-    Invalid simulations do not have scores and are never explained.
-    """
-    if not result.get("valid"):
-        return {"text": "", "source": "computed_facts", "reason": "invalid_result"}
-    facts = _facts(result)
+def _explain_facts(facts, evidence):
+    """Let the model select verified facts; never render free-form model text."""
     nvidia_key, nvidia_model = os.getenv("NVIDIA_API_KEY"), os.getenv("NVIDIA_MODEL")
     openai_key, openai_model = os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_MODEL")
     if nvidia_key and nvidia_model:
@@ -173,7 +176,7 @@ def explain(result):
         api_key = model = provider = selector = None
     if api_key and model:
         try:
-            selected = selector(facts, api_key, model)
+            selected = selector(facts, api_key, model, evidence)
             return {"text": _render(facts, selected), "source": "model",
                     "provider": provider, "model": model}
         except (OSError, ValueError, KeyError, TypeError, IndexError):
@@ -183,3 +186,73 @@ def explain(result):
         "source": "computed_facts",
         "reason": "model_unavailable" if api_key and model else "model_not_configured",
     }
+
+
+def explain(result):
+    """Explain one verified scenario from its complete calculated evidence.
+
+    NVIDIA_API_KEY + NVIDIA_MODEL take priority over OpenAI configuration.
+    Models are never guessed; invalid scenarios are never explained.
+    """
+    if not result.get("valid"):
+        return {"text": "", "source": "computed_facts", "reason": "invalid_result"}
+    return _explain_facts(_facts(result), result)
+
+
+def explain_comparison(current, proposed, removed, added):
+    """Explain a one-change recommendation from two verified simulations."""
+    if not current.get("valid") or not proposed.get("valid"):
+        return {"text": "", "source": "computed_facts", "reason": "invalid_result"}
+    gain = proposed["score"] - current["score"]
+    score_fact = (f"Замена повышает Score с {_fmt(current['score'])} до "
+                  f"{_fmt(proposed['score'])}, на +{_fmt(gain)}.") if gain > 0 else (
+                  f"Замена одной меры не повышает Score: {_fmt(current['score'])}.")
+    strengths = {"score_change": score_fact}
+    if proposed["critical_count"] < current["critical_count"]:
+        strengths["critical_change"] = (
+            f"Критических показателей ниже 40 стало "
+            f"{proposed['critical_count']} вместо {current['critical_count']}.")
+    district_changes = sorted(
+        ((proposed["districts"][district]["score"] - data["score"], district)
+         for district, data in current["districts"].items()), reverse=True)
+    if district_changes and district_changes[0][0] > 0:
+        change, district = district_changes[0]
+        strengths["district_gain"] = f"Больше всего вырос районный балл {district}: +{_fmt(change)}."
+    indicator_changes = sorted(
+        ((proposed["districts"][district]["indicators"][indicator] - value,
+          district, indicator)
+         for district, row in current["districts"].items()
+         for indicator, value in row["indicators"].items()),
+        key=lambda item: (-item[0], item[1], item[2]),
+    )
+    if indicator_changes and indicator_changes[0][0] > 0:
+        change, district, indicator = indicator_changes[0]
+        strengths["indicator_gain"] = (
+            f"После замены показатель {indicator} в районе {district} выше на {_fmt(change)}."
+        )
+    weakest, values = min(proposed["districts"].items(), key=lambda item: item[1]["score"])
+    risks = {"weakest": f"Самый низкий районный балл после замены — {weakest}: {_fmt(values['score'])}."}
+    if proposed["cost"] > current["cost"]:
+        risks["more_cost"] = (
+            f"Расходы вырастут с {current['cost']} до {proposed['cost']} из бюджета 100.")
+    declines = [(change, district) for change, district in district_changes if change < 0]
+    if declines:
+        change, district = min(declines)
+        risks["district_decline"] = f"Районный балл {district} снизится на {_fmt(-change)}."
+    if indicator_changes and indicator_changes[-1][0] < 0:
+        change, district, indicator = indicator_changes[-1]
+        risks["indicator_decline"] = (
+            f"После замены показатель {indicator} в районе {district} ниже на {_fmt(-change)}."
+        )
+    removed_text = ", ".join(item["measure_id"] + ("/" + item["district"] if item["district"] else "/город") for item in removed)
+    added_text = ", ".join(item["measure_id"] + ("/" + item["district"] if item["district"] else "/город") for item in added)
+    tradeoffs = {"measure_change": (f"Заменить {removed_text} на {added_text}." if removed else
+                                   "Улучшения заменой одной меры не найдено."),
+                 "budget": f"Останется {proposed['remaining_budget']} из 100 бюджетных единиц."}
+    facts = {"strengths": strengths, "risks": risks, "tradeoffs": tradeoffs}
+    evidence = {"current": current, "proposed": proposed,
+                "removed": removed, "added": added}
+    answer = _explain_facts(facts, evidence)
+    answer["text"] = ("Совет по проверенному сравнению: " if gain > 0 else
+                      "Сравнение проверенных сценариев: ") + answer["text"]
+    return answer

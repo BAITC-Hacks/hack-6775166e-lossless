@@ -83,6 +83,15 @@
               <article class="result-card"><div class="card-head"><h3>Объяснение</h3><span>ПО РАСЧЁТУ</span></div><div id="explanation" class="explanation"></div></article>
             </div>
             <div id="result-details" class="result-details"></div>
+            <button id="recommend-change" class="secondary-button compare-trigger" type="button">Найти лучшую замену одного решения <span aria-hidden="true">↗</span></button>
+            <div id="comparison-error" class="optimizer-error" role="alert" hidden></div>
+            <article id="comparison-panel" class="result-card comparison-panel" aria-live="polite" hidden>
+              <div class="card-head"><h3>Сравнение двух планов</h3><span>ОДНА ЗАМЕНА</span></div>
+              <div id="comparison-scores" class="comparison-scores"></div>
+              <p id="comparison-swap" class="comparison-swap"></p>
+              <div id="comparison-explanation" class="explanation"></div>
+              <button id="apply-change" class="primary-button" type="button" hidden><span>Применить замену</span><span aria-hidden="true">↗</span></button>
+            </article>
           </div>
         </section>
       </div>

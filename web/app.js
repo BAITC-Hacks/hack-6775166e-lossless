@@ -1,6 +1,6 @@
 "use strict";
 
-const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize" };
+const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/api/optimize", recommendChange: "/api/recommend-change" };
 const state = { catalog: null, decisions: Array.from({ length: 5 }, () => ({ measure_id: "", district: null })) };
 const $ = (id) => document.getElementById(id);
 const formatScore = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(2).replace(".", ",") : "—";
@@ -130,7 +130,12 @@ function updateBudget() {
   $("budget-hint").textContent = used > 100 ? `Превышение бюджета на ${used - 100} ед. Сервер вернёт причину отказа.` : `Остаток ${100 - used} ед. не повышает Score.`;
 }
 
-function hideResult() { $("result-section").hidden = true; }
+function hideComparison() {
+  $("comparison-panel").hidden = true;
+  $("comparison-error").hidden = true;
+}
+
+function hideResult() { $("result-section").hidden = true; hideComparison(); }
 
 function optimizerError(message) {
   const host = $("optimizer-error");
@@ -139,6 +144,7 @@ function optimizerError(message) {
 }
 
 function showErrors(errors) {
+  hideComparison();
   $("result-section").hidden = false;
   $("valid-result").hidden = true;
   const host = $("result-errors");
@@ -207,6 +213,7 @@ function showResult(result) {
     return;
   }
   $("result-section").hidden = false;
+  hideComparison();
   $("result-errors").hidden = true;
   $("valid-result").hidden = false;
   const base = Number(result.base_score ?? state.catalog.base_score);
@@ -223,6 +230,60 @@ function showResult(result) {
   const synergies = result.applied_synergies;
   if (Array.isArray(synergies) && synergies.length) details.append(text("span", `Синергии: ${synergies.length}`, "detail-pill"));
   $("result-section").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function decisionLabel(decision) {
+  return `${decision.measure_id}/${decision.district || "город"}`;
+}
+
+function showComparison(result) {
+  const host = $("comparison-panel");
+  const scores = $("comparison-scores");
+  scores.replaceChildren();
+  const before = text("div", "", "comparison-score");
+  before.append(text("small", "ВАШ ПЛАН"), text("strong", formatScore(result.current.score)), text("span", `Стоимость ${result.current.cost}`));
+  const arrow = text("span", "→", "comparison-arrow");
+  const after = text("div", "", "comparison-score proposed");
+  after.append(text("small", "ПОСЛЕ ЗАМЕНЫ"), text("strong", formatScore(result.proposed.score)), text("span", `Стоимость ${result.proposed.cost}`));
+  scores.append(before, arrow, after);
+  const improved = Number(result.score_delta) > 0;
+  $("comparison-swap").textContent = improved
+    ? `${result.removed.map(decisionLabel).join(", ")} → ${result.added.map(decisionLabel).join(", ")}. Прирост Score: +${Number(result.score_delta).toFixed(5).replace(".", ",")}.`
+    : "Улучшение заменой одного решения не найдено.";
+  const explanation = $("comparison-explanation");
+  explanation.replaceChildren(text("p", result.explanation?.text || "Объяснение недоступно."));
+  if (result.explanation?.source === "computed_facts") explanation.append(text("small", "Объяснение по рассчитанным фактам. AI-модель недоступна.", "explanation-source"));
+  const apply = $("apply-change");
+  apply.hidden = !improved;
+  apply.onclick = async () => {
+    state.decisions = result.decisions.map((item) => ({ ...item }));
+    renderSlots();
+    updateBudget();
+    await calculate();
+  };
+  host.hidden = false;
+  host.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function recommendChange() {
+  const button = $("recommend-change");
+  button.disabled = true;
+  $("comparison-error").hidden = true;
+  $("comparison-panel").hidden = true;
+  const decisions = state.decisions.map((item) => ({ measure_id: item.measure_id, district: item.district }));
+  try {
+    const response = await fetch(API.recommendChange, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions })
+    });
+    const result = await response.json();
+    if (!response.ok || !result?.valid) throw new Error(result?.errors?.map((error) => error.message || error).join(" ") || result?.error || `HTTP ${response.status}`);
+    if (!Array.isArray(result.decisions) || result.decisions.length !== 5 || !Number.isFinite(Number(result.proposed?.score))) throw new Error("неполное сравнение от сервера");
+    if (JSON.stringify(decisions) !== JSON.stringify(state.decisions)) return;
+    showComparison(result);
+  } catch (error) {
+    $("comparison-error").textContent = `Не удалось сравнить планы: ${error.message}`;
+    $("comparison-error").hidden = false;
+  } finally { button.disabled = false; }
 }
 
 async function calculate() {
@@ -291,6 +352,7 @@ async function start() {
     $("app").hidden = false;
     $("submit-plan").addEventListener("click", calculate);
     $("suggest-plan").addEventListener("click", suggestPlan);
+    $("recommend-change").addEventListener("click", recommendChange);
   } catch (error) {
     $("loading").hidden = true;
     $("app-error").textContent = `Не удалось загрузить исходные данные: ${error.message}. Обновите страницу после запуска сервера.`;

@@ -3,7 +3,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from src.explanation import explain
+from src.explanation import explain, explain_comparison
 
 
 RESULT = {
@@ -12,7 +12,8 @@ RESULT = {
     "score": 56.54307,
     "cost": 95,
     "remaining_budget": 5,
-    "districts": {"Нура": {"score": 48.1}, "Есиль": {"score": 61.2}},
+    "districts": {"Нура": {"score": 48.1, "indicators": {"S1": 48.0}},
+                  "Есиль": {"score": 61.2, "indicators": {"S1": 63.0}}},
     "deltas": {"Нура": {"S1": 10.0, "T1": -1.5}, "Есиль": {"S1": 0.0}},
     "contributions": [{"measure_id": "M7", "lag_factor": 0.625}],
     "applied_synergies": [{"measures": ["M10", "M12"], "district": "Нура", "indicator": "B1", "bonus": 2}],
@@ -104,6 +105,39 @@ class ExplanationTests(unittest.TestCase):
             answer = explain(RESULT)
         self.assertEqual(answer["reason"], "model_not_configured")
         mock_open.assert_not_called()
+
+    def test_comparison_model_receives_both_calculations_and_only_selects_facts(self):
+        current = {**RESULT, "score": 56.54307}
+        proposed = {**RESULT, "score": 57.20556, "cost": 100, "remaining_budget": 0,
+                    "districts": {"Нура": {"score": 50.1, "indicators": {"S1": 50.0}},
+                                  "Есиль": {"score": 61.2, "indicators": {"S1": 63.0}}}}
+        removed = [{"measure_id": "M5", "district": "Сарыарка"}]
+        added = [{"measure_id": "M3", "district": "Нура"}]
+        chosen = {"strengths": ["score_change"], "risks": ["more_cost"],
+                  "tradeoffs": ["measure_change"]}
+        response = {"choices": [{"message": {"content": json.dumps(chosen)}}]}
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "test-key", "NVIDIA_MODEL": "explicit/model",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}), \
+                patch("src.explanation.request.urlopen", return_value=FakeResponse(response)) as mock_open:
+            answer = explain_comparison(current, proposed, removed, added)
+        self.assertEqual(answer["source"], "model")
+        self.assertIn("M5/Сарыарка на M3/Нура", answer["text"])
+        sent = json.loads(mock_open.call_args.args[0].data)
+        evidence = json.loads(sent["messages"][1]["content"])["calculated_evidence"]
+        self.assertEqual(evidence["current"]["deltas"], current["deltas"])
+        self.assertEqual(evidence["current"]["contributions"], current["contributions"])
+        self.assertEqual(evidence["proposed"]["score"], proposed["score"])
+
+    def test_comparison_offline_uses_verified_values(self):
+        current = {**RESULT, "score": 56.54307}
+        proposed = {**RESULT, "score": 57.20556, "cost": 100, "remaining_budget": 0}
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "", "NVIDIA_MODEL": "",
+                                  "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}):
+            answer = explain_comparison(current, proposed,
+                                        [{"measure_id": "M5", "district": "Сарыарка"}],
+                                        [{"measure_id": "M3", "district": "Нура"}])
+        self.assertEqual(answer["source"], "computed_facts")
+        self.assertIn("56,54 до 57,21", answer["text"])
 
 
 if __name__ == "__main__":

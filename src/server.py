@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from simulator import catalog, simulate
-from optimizer import optimize
+from optimizer import best_one_change, optimize
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,8 +21,8 @@ MAX_REQUEST_BYTES = 64 * 1024
 
 
 @lru_cache(maxsize=1)
-def _optimal_scenario():
-    """Find the exact best portfolio for the fixed official catalogue."""
+def _optimizer_payload():
+    """Give both optimization modes the same canonical simulator inputs."""
     data = catalog()
     district_names = tuple(data["districts"])
     indicator_names = tuple(data["indicators"])
@@ -30,7 +30,7 @@ def _optimal_scenario():
         "Транспорт": "T", "Экология": "E", "Соцсфера": "S",
         "Безопасность": "B", "Сервисы": "C",
     }
-    payload = {
+    return {
         "districts": district_names,
         "indicators": indicator_names,
         "rows": [[int(data["districts"][district]["indicators"][key]) for key in indicator_names]
@@ -46,6 +46,13 @@ def _optimal_scenario():
         "budget": data["budget"], "decisions": 5,
         "horizon_quarters": data["horizon_quarters"],
     }
+
+
+@lru_cache(maxsize=1)
+def _optimal_scenario():
+    """Find the exact best portfolio for the fixed official catalogue."""
+    payload = _optimizer_payload()
+    district_names = tuple(payload["districts"])
     found = optimize(payload)
     decisions = [{"measure_id": choice["id"],
                   "district": None if choice["district"] is None
@@ -55,6 +62,34 @@ def _optimal_scenario():
     if not checked["valid"] or abs(checked["score"] - found["score"]) > 1e-8:
         raise RuntimeError("Optimizer and simulator disagree")
     return decisions, checked
+
+
+def _one_change_scenario(decisions, current):
+    """Compare a user plan with its best valid one-decision patch."""
+    payload = _optimizer_payload()
+    district_names = tuple(payload["districts"])
+    fixed = [{"id": item["measure_id"],
+              "district": None if item.get("district") is None
+              else district_names.index(item["district"])} for item in decisions]
+    found = best_one_change(payload, fixed)
+    proposed_decisions = [{"measure_id": item["id"],
+                           "district": None if item["district"] is None
+                           else district_names[item["district"]]}
+                          for item in found["choices"]]
+    proposed = simulate(proposed_decisions)
+    if not proposed["valid"] or abs(proposed["score"] - found["score"]) > 1e-8:
+        raise RuntimeError("Recommendation and simulator disagree")
+    removed = [{"measure_id": item["id"],
+                "district": None if item["district"] is None
+                else district_names[item["district"]]} for item in found["removed"]]
+    added = [{"measure_id": item["id"],
+              "district": None if item["district"] is None
+              else district_names[item["district"]]} for item in found["added"]]
+    from explanation import explain_comparison
+    return {"valid": True, "current": current, "proposed": proposed,
+            "decisions": proposed_decisions, "removed": removed, "added": added,
+            "score_delta": found["score_delta"], "cost_delta": found["cost_delta"],
+            "explanation": explain_comparison(current, proposed, removed, added)}
 
 
 def _fallback_explanation(result):
@@ -124,7 +159,8 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/api/simulate":
+        route = urlsplit(self.path).path
+        if route not in ("/api/simulate", "/api/recommend-change"):
             self._json(404, {"error": "Unknown API route"})
             return
         try:
@@ -137,10 +173,21 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             self._json(400, {"error": "Ожидается корректный JSON с решениями."})
             return
-        result = simulate(request.get("decisions"))
-        if result["valid"]:
-            result["explanation"] = _explain(result)
-        self._json(200, result)
+        decisions = request.get("decisions")
+        result = simulate(decisions)
+        if route == "/api/simulate":
+            if result["valid"]:
+                result["explanation"] = _explain(result)
+            self._json(200, result)
+            return
+        if not result["valid"]:
+            self._json(400, result)
+            return
+        try:
+            self._json(200, _one_change_scenario(decisions, result))
+        except Exception as exc:
+            print(f"One-change recommendation unavailable: {type(exc).__name__}: {exc}")
+            self._json(500, {"error": "Сравнение сценариев сейчас недоступно."})
 
 
 if __name__ == "__main__":
