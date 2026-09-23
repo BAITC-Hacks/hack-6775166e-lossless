@@ -126,6 +126,22 @@ class HumanAdviceContractTest(unittest.TestCase):
         self.assertIn("one_change_district_2", json.loads(sent["input"])["candidates"])
         self.assertFalse(sent["store"])
 
+    def test_model_overview_still_shows_mentioned_district_tradeoff(self):
+        response = {"output": [{"type": "message", "content": [{"type": "output_text",
+                    "text": json.dumps({"selected_option": "none",
+                                        "fact_ids": ["current_overview",
+                                                     "one_change_overview"]})}]}]}
+        env = {**NO_MODEL, "OPENAI_API_KEY": "unit-test-key",
+               "OPENAI_MODEL": "unit-test-model"}
+        with patch.dict(os.environ, env), \
+                patch("explanation._post_json", return_value=response):
+            answer = _advice_scenario(EXAMPLE, simulate(EXAMPLE),
+                                      "Почему замена ухудшает Сарыарку?")
+        advice = answer["advice"]
+        self.assertEqual(advice["source"], "model")
+        self.assertIn("Оба альтернативных варианта снижают", advice["text"])
+        self.assertIn("Лучшая замена одной меры: район Сарыарка", advice["text"])
+
     def test_advisor_reads_openai_configuration_from_env_file(self):
         response = {"output": [{"type": "message", "content": [{"type": "output_text",
                     "text": json.dumps({"selected_option": "none",

@@ -344,8 +344,11 @@ _ADVISOR_INSTRUCTIONS = (
     "Если человек просит не ухудшать район относительно его плана, не выбирай "
     "вариант с отрицательной разницей для этого района. Верни только JSON-объект "
     "с полями selected_option и fact_ids. selected_option: current, one_change, "
-    "optimum или none. fact_ids: от 2 до 5 разных ID из candidates, которые прямо "
-    "отвечают на вопрос. Не добавляй текст, числа или другие поля."
+    "optimum или none. fact_ids: от 2 до 5 разных строковых ключей из candidates, "
+    "которые прямо отвечают на вопрос. Например: "
+    "{\"selected_option\":\"none\",\"fact_ids\":[\"current_overview\","
+    "\"one_change_district_2\"]}. Значения fact_ids должны быть строками, "
+    "а не порядковыми номерами. Не добавляй текст, числа или другие поля."
 )
 
 
@@ -393,6 +396,26 @@ def _advice_facts(options, indicator_names=None):
             if old != new else f"{labels[oid]}: набор мер совпадает с вашим планом."
         )
     return facts
+
+
+def _relevant_advice_facts(question, facts, district_names):
+    """Keep the model's evidence focused on the question; retain verified IDs."""
+    mentioned = set(_mentioned_districts(question, district_names))
+    indices = {str(index) for index, name in enumerate(district_names)
+               if name in mentioned}
+    selected = {}
+    for fid, value in facts.items():
+        if fid.endswith(("_overview", "_measures")):
+            selected[fid] = value
+        elif "_district_" in fid:
+            index = fid.split("_district_", 1)[1]
+            if not mentioned or index in indices:
+                selected[fid] = value
+        elif "_indicator_" in fid:
+            index = fid.split("_indicator_", 1)[1].split("_", 1)[0]
+            if index in indices:
+                selected[fid] = value
+    return selected
 
 
 def _validate_advice_selection(output, facts):
@@ -524,7 +547,8 @@ def advise(question, options, indicator_names=None):
     if api_key and model:
         try:
             proposed_option, proposed_facts = _advisor_model_selection(
-                question, facts, api_key, model, provider)
+                question, _relevant_advice_facts(question, facts, district_names),
+                api_key, model, provider)
             if _contradicts_no_decline(question, options, proposed_option):
                 raise ValueError("Advisor contradicts an explicit district constraint")
             selected_option, selected_facts = proposed_option, proposed_facts
@@ -535,10 +559,15 @@ def advise(question, options, indicator_names=None):
                   if option["id"] == selected_option), None)
     intro = (f"С учётом вашего вопроса рассмотрите вариант «{label}». "
              if label else "Сравните рассчитанные варианты с вашим приоритетом. ")
-    if source == "computed_facts":
-        summary = _fallback_district_summary(question, options)
-        if summary:
-            intro += summary + " "
+    summary = _fallback_district_summary(question, options)
+    if summary:
+        intro += summary + " "
+    for index, district in enumerate(district_names):
+        if district in _mentioned_districts(question, district_names):
+            for oid in ("current", "one_change", "optimum"):
+                fid = f"{oid}_district_{index}"
+                if fid in facts and fid not in selected_facts:
+                    selected_facts.append(fid)
     text = intro.strip() + "\n" + "\n".join(f"• {facts[fid]}" for fid in selected_facts)
     answer = {"text": text, "source": source, "selected_option": selected_option}
     if source == "model":
