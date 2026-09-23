@@ -1,0 +1,27 @@
+/* Scoped to the optional result visualization. */
+.district-viz{display:grid;gap:22px;color:#1b302c}
+.district-viz__heading{font-size:14px;letter-spacing:-.02em;margin:0 0 10px}
+.district-viz__formula{font-size:12px;line-height:1.5;margin:0 0 10px;color:#435f53;font-variant-numeric:tabular-nums}
+.district-viz__composition{display:flex;width:100%;height:14px;background:#edf2ed;border-radius:7px;overflow:hidden}
+.district-viz__segment--average{background:#498d62}
+.district-viz__segment--worst{background:#b3cf6b}
+.district-viz__legend{display:flex;flex-wrap:wrap;gap:7px 13px;margin-top:9px}
+.district-viz__legend-item{font-size:10px;line-height:1.4;color:#51675c}
+.district-viz__legend-item::before{content:"";display:inline-block;width:7px;height:7px;margin-right:5px;border-radius:50%;vertical-align:1px}
+.district-viz__legend-item--average::before{background:#498d62}
+.district-viz__legend-item--worst::before{background:#b3cf6b}
+.district-viz__legend-item--penalty::before{background:#bd5d44}
+.district-viz__list{display:grid;gap:13px}
+.district-viz__district{border-top:1px solid #e5ece7;padding-top:10px;min-width:0}
+.district-viz__district-heading{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-variant-numeric:tabular-nums}
+.district-viz__district-heading strong{font-weight:700}
+.district-viz__district-heading span{font-weight:800}
+.district-viz__track{height:7px;background:#e7eee8;border-radius:5px;overflow:hidden;margin:6px 0 7px}
+.district-viz__fill{display:block;height:100%;background:#65a775}
+.district-viz__changes{display:flex;flex-wrap:wrap;gap:4px 9px;min-width:0}
+.district-viz__change{font-size:10px;color:#397450;line-height:1.35}
+.district-viz__change--negative{color:#ae553f}
+.district-viz__unchanged,.district-viz__note{font-size:10px;color:#798a81;line-height:1.4}
+.district-viz__note{margin:10px 0 0}
+@media(max-width:620px){.district-viz__legend{display:grid;gap:4px}.district-viz__composition{height:12px}}
+@media(prefers-reduced-motion:no-preference){.district-viz__fill{transition:width .35s ease}}
