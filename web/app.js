@@ -471,9 +471,9 @@ function displayExplanation(explanation) {
   else source.textContent = "Пояснение к результату сервера";
   const content = typeof explanation === "string" ? explanation : explanation?.text;
   if (typeof content !== "string" || !content.trim()) { host.append(node("p", "Советник сейчас недоступен. Результаты расчёта сохранены в докладе.")); return; }
-  // The fallback is a server-produced fact string. Localize labels and decimal
+  // Explanations are assembled from server facts. Localize labels and decimal
   // punctuation only; the simulator's values and Score are displayed unchanged.
-  const displayText = explanation?.source === "computed_facts"
+  const displayText = ["computed_facts", "model"].includes(explanation?.source)
     ? content.replace(/\b[A-Z][0-9]\b/g, (key) => state.catalog?.indicators?.[key]?.name || key)
       .replace(/(\d)\.(\d)/g, "$1,$2")
     : content;
