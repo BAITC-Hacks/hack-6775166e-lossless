@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/agent-worktree create NAME
+       scripts/agent-worktree list
+       scripts/agent-worktree env NAME
+       scripts/agent-worktree run NAME -- COMMAND [ARG...]
+       scripts/agent-worktree remove NAME
+
+NAME: lowercase letters, digits, and hyphens; starts with a letter.
+Worktrees live in .agent-worktrees/ and branches are agent/NAME.
+EOF
+}
+
+die() { printf 'agent-worktree: %s\n' "$*" >&2; exit 1; }
+command -v git >/dev/null || die 'git is required'
+main_root=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
+[[ -n "$main_root" ]] || die 'not inside a Git worktree'
+worktree_root="$main_root/.agent-worktrees"
+
+valid_name() { [[ "$1" =~ ^[a-z][a-z0-9-]*$ ]]; }
+path_for() {
+  valid_name "$1" || die "invalid name: $1"
+  printf '%s/%s\n' "$worktree_root" "$1"
+}
+require_worktree() {
+  local path
+  path=$(path_for "$1")
+  [[ -d "$path" ]] || die "worktree does not exist: $1"
+  [[ $(git -C "$path" rev-parse --show-toplevel 2>/dev/null) == "$path" ]] || die "not a registered worktree: $path"
+  printf '%s\n' "$path"
+}
+port_for() {
+  local name=$1 candidate other other_name
+  candidate=$((20000 + $(printf '%s' "$name" | cksum | awk '{print $1}') % 20000))
+  for other in "$worktree_root"/*; do
+    [[ -d "$other" ]] || continue
+    other_name=${other##*/}
+    [[ "$other_name" == "$name" ]] && continue
+    if [[ -f "$other/.agent-runtime/port" ]] && [[ $(cat "$other/.agent-runtime/port") == "$candidate" ]]; then
+      die "port $candidate already assigned to $other_name; choose another name"
+    fi
+  done
+  printf '%s\n' "$candidate"
+}
+prepare_runtime() {
+  local name=$1 path port
+  path=$(require_worktree "$name")
+  mkdir -p "$path/.agent-runtime"/{tmp,cache,data,logs} "$path/.venv"
+  if [[ -f "$path/.agent-runtime/port" ]]; then
+    port=$(cat "$path/.agent-runtime/port")
+  else
+    port=$(port_for "$name")
+    printf '%s\n' "$port" > "$path/.agent-runtime/port"
+  fi
+  printf '%s\n' "$path" "$port"
+}
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+action=$1; shift
+case "$action" in
+  create)
+    [[ $# == 1 ]] || { usage; exit 2; }
+    path=$(path_for "$1")
+    [[ ! -e "$path" ]] || die "path already exists: $path"
+    port_for "$1" >/dev/null
+    mkdir -p "$worktree_root"
+    if git -C "$main_root" show-ref --verify --quiet "refs/heads/agent/$1"; then
+      git -C "$main_root" worktree add "$path" "agent/$1"
+    else
+      git -C "$main_root" worktree add -b "agent/$1" "$path"
+    fi
+    if [[ -f "$main_root/AGENTS.md" ]]; then
+      cp "$main_root/AGENTS.md" "$path/AGENTS.md"
+    fi
+    prepare_runtime "$1" >/dev/null
+    printf 'Created %s on agent/%s\n' "$path" "$1"
+    ;;
+  list)
+    [[ $# == 0 ]] || { usage; exit 2; }
+    git -C "$main_root" worktree list
+    ;;
+  env)
+    [[ $# == 1 ]] || { usage; exit 2; }
+    runtime=$(prepare_runtime "$1")
+    path=${runtime%$'\n'*}; port=${runtime##*$'\n'}
+    printf 'export PORT=%q TMPDIR=%q XDG_CACHE_HOME=%q AGENT_DATA_DIR=%q AGENT_LOG_DIR=%q VIRTUAL_ENV=%q\n' \
+      "$port" "$path/.agent-runtime/tmp" "$path/.agent-runtime/cache" \
+      "$path/.agent-runtime/data" "$path/.agent-runtime/logs" "$path/.venv"
+    printf 'export PATH=%q\n' "$path/.venv/bin:$PATH"
+    ;;
+  run)
+    [[ $# -ge 3 && "$2" == -- ]] || { usage; exit 2; }
+    name=$1; shift 2
+    runtime=$(prepare_runtime "$name")
+    path=${runtime%$'\n'*}; port=${runtime##*$'\n'}
+    cd "$path"
+    export PORT="$port" TMPDIR="$path/.agent-runtime/tmp"
+    export XDG_CACHE_HOME="$path/.agent-runtime/cache" AGENT_DATA_DIR="$path/.agent-runtime/data"
+    export AGENT_LOG_DIR="$path/.agent-runtime/logs" VIRTUAL_ENV="$path/.venv"
+    export PATH="$VIRTUAL_ENV/bin:$PATH"
+    log="$AGENT_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-run.log"
+    "$@" 2>&1 | tee "$log"
+    ;;
+  remove)
+    [[ $# == 1 ]] || { usage; exit 2; }
+    path=$(require_worktree "$1")
+    [[ -z $(git -C "$path" status --porcelain --untracked-files=all) ]] || die "worktree has uncommitted or untracked files: $path"
+    git -C "$main_root" worktree remove "$path"
+    printf 'Removed worktree %s; branch agent/%s remains.\n' "$path" "$1"
+    ;;
+  *) usage; exit 2 ;;
+esac

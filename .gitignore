@@ -11,3 +11,7 @@ __pycache__/
 *.py[cod]
 .venv/
 node_modules/
+.agent-worktrees/
+.agent-runtime/
+.pytest_cache/
+.mypy_cache/
