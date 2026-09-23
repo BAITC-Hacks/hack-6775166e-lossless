@@ -384,7 +384,6 @@ function beginMeasureDrag(measureId, event, source, fromGrip = false) {
   if (!measure || state.decisions.some((item) => item.measure_id === measureId)) return;
   if (event.pointerType === "mouse" && !fromGrip && event.target.closest("button, a, input, select, textarea")) return;
   state.drag = { measure, source, fromGrip, pointerId: event.pointerId, pointerType: event.pointerType, x: event.clientX, y: event.clientY, started: false, target: null, targetKey: "", ghost: null };
-  if (fromGrip) event.preventDefault();
   try { source.setPointerCapture(event.pointerId); } catch (_) { /* drag still works through window listeners */ }
 }
 window.addEventListener("pointermove", (event) => {
