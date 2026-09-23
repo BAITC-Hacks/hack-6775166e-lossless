@@ -364,11 +364,11 @@ function updateBudget() {
   $("submit-plan").querySelector("span").textContent = state.busy === "simulate" ? "Считаем последствия…" : "Подписать распоряжения";
   $("suggest-plan").disabled = !!state.busy;
   $("compare-plan").disabled = !!state.busy || !state.result;
-  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "Сравнить с оптимумом";
+  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Оптимизатор считает план…" : "Сравнить с оптимумом";
   $("recommend-change").disabled = !!state.busy || !state.result;
   $("recommend-change").querySelector("span").textContent = state.busy === "recommend" ? "Ищем одну замену…" : "Улучшить одно распоряжение";
-  $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "План советника";
-  $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем пакет и готовим итоговый доклад" : state.busy === "optimize" ? "Советник готовит предложение. Ваш пакет сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "распоряжение" : missing < 5 ? "распоряжения" : "распоряжений"}` : errors[0] || "Пакет готов к проверке и расчёту";
+  $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Оптимизатор считает план…" : "Оптимум по Score";
+  $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем пакет и готовим итоговый доклад" : state.busy === "optimize" ? "Оптимизатор рассчитывает вариант. Ваш пакет сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "распоряжение" : missing < 5 ? "распоряжения" : "распоряжений"}` : errors[0] || "Пакет готов к проверке и расчёту";
 }
 function renderPlanner() { renderCategories(); renderMeasures(); renderSlots(); updateBudget(); }
 function setBusy(kind) {
@@ -447,7 +447,7 @@ function confirmMeasure() {
 }
 async function requestJson(url, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 60000);
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -472,7 +472,13 @@ function displayExplanation(explanation) {
   else source.textContent = "Пояснение к результату сервера";
   const content = typeof explanation === "string" ? explanation : explanation?.text;
   if (typeof content !== "string" || !content.trim()) { host.append(node("p", "Советник сейчас недоступен. Результаты расчёта сохранены в докладе.")); return; }
-  content.trim().split(/\n+/).filter(Boolean).forEach((line) => {
+  // Explanations are assembled from server facts. Localize labels and decimal
+  // punctuation only; the simulator's values and Score are displayed unchanged.
+  const displayText = ["computed_facts", "model"].includes(explanation?.source)
+    ? content.replace(/\b[A-Z][0-9]\b/g, (key) => state.catalog?.indicators?.[key]?.name || key)
+      .replace(/(\d)\.(\d)/g, "$1,$2")
+    : content;
+  displayText.trim().split(/\n+/).filter(Boolean).forEach((line) => {
     const match = line.match(/^(Сильные стороны|Риски|Компромиссы):\s*(.*)$/);
     if (match) {
       const section = node("section", null, "explanation-block");
@@ -588,6 +594,10 @@ function renderComparison(current, proposed, decisions) {
   const describe = (items) => items.map(({ measure_id, district }) => `${measure_id} / ${district || "город"}`).join(" · ");
   $("comparison-measures").textContent = `Ваш план: ${describe(state.decisions)}. Рекомендация: ${describe(decisions)}.`;
 }
+function sameDecisions(first, second) {
+  const keys = (items) => items.map((item) => `${item.measure_id}/${item.district || "город"}`).sort().join("|");
+  return keys(first) === keys(second);
+}
 function showSuggestion(result, decisions, explanation = null, removed = [], added = [], improved = true) {
   state.proposal = { result, decisions };
   renderComparison(state.result, result, decisions);
@@ -614,12 +624,12 @@ function showSuggestion(result, decisions, explanation = null, removed = [], add
       ? `AI-разбор проверенных расчётов · ${explanation.provider || "модель"}`
       : "Разбор по рассчитанным фактам. AI-модель недоступна.";
   }
-  $("apply-suggestion").hidden = !improved;
+  $("apply-suggestion").hidden = !improved || sameDecisions(state.decisions, decisions);
   $("suggestion-dialog").showModal();
 }
 async function suggestPlan() {
   if (state.busy) return;
-  notice(""); state.proposal = null; setBusy("optimize"); announce("Советник ищет рассчитанный план. Ваш пакет остаётся у вас.");
+  notice(""); state.proposal = null; setBusy("optimize"); announce("Оптимизатор ищет лучший план по Score. Ваш пакет остаётся у вас.");
   try {
     const result = await requestJson(API.optimize);
     const decisions = validateProposal(result);
@@ -629,14 +639,14 @@ async function suggestPlan() {
   } catch (error) {
     console.error("Proposal request failed", error);
     if (state.stage === "report") setStage("planner");
-    notice("Советник сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
+    notice("Оптимизатор сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
   } finally { setBusy(null); }
 }
 async function recommendChange() {
   if (state.busy || !state.result) return;
   const revision = state.revision;
   const decisions = state.decisions.map((item) => ({ ...item }));
-  setBusy("recommend"); announce("Советник ищет лучшую замену одного распоряжения.");
+  setBusy("recommend"); announce("Оптимизатор ищет лучшую замену одного распоряжения.");
   try {
     const answer = await requestJson(API.recommendChange, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions })
@@ -647,7 +657,7 @@ async function recommendChange() {
     const proposed = { ...answer.proposed, decisions: answer.decisions };
     const next = validateProposal(proposed);
     $("suggestion-title").textContent = "Одна замена. Проверенный результат.";
-    $("suggestion-description").textContent = "Советник сохранил четыре ваших решения и проверил лучшую допустимую замену симулятором.";
+    $("suggestion-description").textContent = "Оптимизатор сохранил четыре ваших решения и проверил лучшую допустимую замену симулятором.";
     showSuggestion(proposed, next, answer.explanation, answer.removed || [], answer.added || [], answer.score_delta > 0);
   } catch (error) {
     console.error("One-change recommendation failed", error);
@@ -686,7 +696,7 @@ function renderAdvisorAnswer(answer) {
     card.append(node("span", format(option.result.score), "advisor-option-score"));
     card.append(node("small", `${format(option.result.cost, 0)} / ${format(budget(), 0)} ед. бюджета`));
     if (typeof option.tradeoff === "string" && option.tradeoff.trim()) card.append(node("p", option.tradeoff.trim()));
-    if (id !== "current") {
+    if (id !== "current" && !sameDecisions(state.decisions, option.decisions)) {
       const button = node("button", "Сравнить с моим планом", "button button-secondary");
       button.type = "button";
       button.addEventListener("click", () => {
@@ -742,9 +752,9 @@ function applySuggestion() {
   if (!state.proposal || state.busy) return;
   const decisions = state.proposal.decisions;
   $("suggestion-dialog").close();
-  setDecisions(decisions, "План советника перенесён в пакет. Его можно изменить перед подписанием.");
+  setDecisions(decisions, "Рассчитанный план перенесён в пакет. Его можно изменить перед подписанием.");
   setStage("planner");
-  notice("План советника в вашем пакете. Проверьте пять распоряжений и подпишите, когда будете готовы.");
+  notice("Рассчитанный план в вашем пакете. Проверьте пять распоряжений и подпишите, когда будете готовы.");
 }
 async function start() {
   $("loading").hidden = false; $("load-error").hidden = true;

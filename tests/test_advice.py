@@ -85,6 +85,22 @@ class HumanAdviceContractTest(unittest.TestCase):
                                         "Какой ценой улучшается результат для Сарыарки?")
         self.assertEqual(nura["options"], saryarka["options"])
 
+    def test_optimal_plan_does_not_offer_a_fake_one_change(self):
+        optimum = [
+            {"measure_id": "M2", "district": None},
+            {"measure_id": "M3", "district": "Нура"},
+            {"measure_id": "M8", "district": "Нура"},
+            {"measure_id": "M9", "district": "Нура"},
+            {"measure_id": "M14", "district": None},
+        ]
+        with patch.dict(os.environ, NO_MODEL):
+            answer = _advice_scenario(optimum, simulate(optimum), "Есть ли замена?")
+        same = answer["options"][1]
+        self.assertEqual(same["decisions"], optimum)
+        self.assertEqual(same["result"]["score"], answer["options"][0]["result"]["score"])
+        self.assertIn("нет", same["label"])
+        self.assertIn("тот же набор", same["tradeoff"])
+
     def test_model_selects_grounded_facts_without_changing_options(self):
         response = {"output": [{"type": "message", "content": [{"type": "output_text",
                      "text": json.dumps({"selected_option": "current",

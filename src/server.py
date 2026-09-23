@@ -123,12 +123,17 @@ def _advice_scenario(decisions, current, question):
         raise ValueError("Question must contain 1 to 500 characters")
     one_change = _one_change_scenario(decisions, current, include_explanation=False)
     optimum_decisions, optimum = _optimal_scenario()
+    has_better_one_change = one_change["score_delta"] > 1e-8
     options = [
         {"id": "current", "label": "Ваш план", "result": current,
          "decisions": decisions, "tradeoff": "Ваши пять решений; база для сравнения."},
-        {"id": "one_change", "label": "Заменить одну меру", "result": one_change["proposed"],
+        {"id": "one_change", "label": ("Лучшая замена одной меры" if has_better_one_change
+                                        else "Улучшения одной заменой нет"),
+         "result": one_change["proposed"],
          "decisions": one_change["decisions"],
-         "tradeoff": _option_tradeoff(current, one_change["proposed"])},
+         "tradeoff": (_option_tradeoff(current, one_change["proposed"])
+                      if has_better_one_change else
+                      "Допустимой замены с более высоким Score нет; это тот же набор решений.")},
         {"id": "optimum", "label": "Максимум Score модели", "result": optimum,
          "decisions": optimum_decisions,
          "tradeoff": _option_tradeoff(current, optimum)},
