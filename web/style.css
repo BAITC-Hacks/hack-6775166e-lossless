@@ -2,11 +2,11 @@
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;scroll-padding-top:110px}
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
-button,input,select{font:inherit}
+button,input,select,textarea{font:inherit}
 button{cursor:pointer}
 button:disabled{cursor:not-allowed;opacity:.48}
 button,a{-webkit-tap-highlight-color:transparent}
-button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid var(--orange);outline-offset:4px}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--orange);outline-offset:4px}
 button{color:inherit}
 h1,h2,h3,p{margin:0}
 h1,h2,h3{line-height:1.15}
@@ -400,6 +400,33 @@ h1[tabindex="-1"]:focus,h2[tabindex="-1"]:focus{outline:none}
 .suggestion-ai p{white-space:pre-line}
 .suggestion-ai small{display:block;margin-top:10px;color:var(--muted)}
 
+/* The advisor helps a person interpret computed alternatives; it never sets Score. */
+.advisor-help{margin-top:24px;padding:30px}
+.advisor-help-intro{display:flex;justify-content:space-between;gap:30px}
+.advisor-help-intro h2{margin:6px 0 9px}
+.advisor-help-intro p:not(.eyebrow){max-width:800px;font-size:13px;line-height:1.7;color:var(--muted)}
+.advisor-help-mark{display:grid;place-items:center;flex-shrink:0;width:48px;height:48px;border-radius:50%;background:var(--soft);color:#84946c}
+.advisor-form{margin-top:24px}
+.advisor-form label{display:block;margin-bottom:8px;font-size:12px;font-weight:650}
+.advisor-form-row{display:flex;align-items:stretch;gap:12px}
+.advisor-form textarea{display:block;flex:1;min-width:0;min-height:76px;resize:vertical;border:1px solid #bec9bb;border-radius:8px;background:#fff;color:var(--ink);padding:13px 15px;line-height:1.5}
+.advisor-form textarea::placeholder{color:#87938a}
+.advisor-form-row .button{align-self:stretch;justify-content:center;white-space:nowrap}
+.advisor-input-hint{margin-top:8px;font-size:11px;color:var(--muted)}
+.advisor-response{margin-top:24px;border-top:1px solid var(--line);padding-top:22px}
+.advisor-response-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.advisor-response-head strong{font-size:15px}
+.advisor-response-head span{font-size:11px;color:var(--muted)}
+.advisor-response>p{font-size:13px;line-height:1.75;white-space:pre-line}
+.advisor-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:17px}
+.advisor-option{display:flex;flex-direction:column;gap:7px;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--paper)}
+.advisor-option strong{font-size:13px}
+.advisor-option-picked{align-self:flex-start;border-radius:4px;background:#e4ecd9;padding:3px 7px;color:var(--green);font-size:10px;line-height:1.4}
+.advisor-option-score{font:26px var(--serif);font-variant-numeric:tabular-nums}
+.advisor-option p{font-size:11px;color:var(--muted);line-height:1.6}
+.advisor-option .button{align-self:flex-start;margin-top:auto}
+.advisor-error{margin-top:15px;color:var(--danger);font-size:12px}
+@media(max-width:720px){.advisor-help{padding:21px;margin-top:15px}.advisor-help-mark{display:none}.advisor-form-row{flex-direction:column}.advisor-form-row .button{align-self:flex-start}.advisor-options{grid-template-columns:1fr}}
 /* City control room: information-first dark visual language. */
 :root{--paper:#080e18;--panel:#101b2b;--ink:#f3f8fb;--muted:#9eafc0;--green:#52ddf5;--green-dark:#0a1825;--lime:#dbff69;--line:#2a3d50;--orange:#ff9d70;--soft:#19283a;--danger:#ff8e7f;--serif:'Arial Black',Arial,sans-serif;--sans:Arial,Helvetica,sans-serif;color-scheme:dark}
 html{scroll-padding-top:26px}
@@ -593,6 +620,22 @@ dialog>p:not(.dialog-label):not(.city-scope-note),.measure-facts,.dialog-label,.
 .coverage-chip.is-affected{border-color:var(--lime);background:#385046;color:var(--lime);box-shadow:inset 0 0 9px #d9ff5b28}
 @media(max-width:850px){.coverage-districts{grid-template-columns:repeat(5,minmax(0,1fr))}}
 @media(max-width:390px){.coverage-districts{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* Grounded advisor follows the city control room palette. */
+.advisor-help{border-top:2px solid var(--green)}
+.advisor-help-mark{border:1px solid #3b6574;border-radius:1px;background:#203e4b;color:var(--green)}
+.advisor-form label{font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.8px;text-transform:uppercase;color:#b9d1dc}
+.advisor-form textarea{border:1px solid #48687a;border-radius:1px;background:#0c1d2d;color:var(--ink);caret-color:var(--lime)}
+.advisor-form textarea::placeholder{color:#8fa9b9}
+.advisor-form textarea:focus-visible{outline:3px solid var(--lime);outline-offset:3px}
+.advisor-response-head strong{font:900 15px var(--serif);text-transform:uppercase}
+.advisor-response-head span,.advisor-input-hint{color:#abc0cd}
+.advisor-option{border-color:#3c576b;border-radius:1px;background:#14283a}
+.advisor-option strong{color:#f3f8fb}
+.advisor-option-picked{border:1px solid #6f9162;border-radius:1px;background:#2c493f;color:var(--lime)}
+.advisor-option-score{font:900 27px var(--serif);color:var(--lime)}
+.advisor-option small{color:#abc0cd}
+.advisor-option p{color:#bfd0d9}
 
 /* Legible primary labels on narrow phones without widening the layout. */
 @media(max-width:430px){

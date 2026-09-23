@@ -61,6 +61,10 @@ def _fmt(number):
     return f"{number:.2f}".replace(".", ",")
 
 
+def _fmt_signed(number):
+    return f"{number:+.2f}".replace(".", ",")
+
+
 def _facts(result):
     """Build display-ready facts solely from computed fields."""
     score_delta = result["score"] - result["base_score"]
@@ -327,4 +331,218 @@ def explain_comparison(current, proposed, removed, added, *, diagnostics=False):
     answer = _explain_facts(facts, evidence, diagnostics=diagnostics)
     answer["text"] = ("Совет по проверенному сравнению: " if gain > 0 else
                       "Сравнение проверенных сценариев: ") + answer["text"]
+    return answer
+
+
+_ADVISOR_INSTRUCTIONS = (
+    "Ты помогаешь человеку выбрать среди уже рассчитанных сценариев синтетического "
+    "города. Математический оптимум и все числа рассчитаны программой; ничего не "
+    "пересчитывай и не меняй. Истолкуй вопрос пользователя и выбери наиболее "
+    "уместный готовый вариант для обсуждения, учитывая районные потери и расходы. "
+    "Если человек спрашивает только об отличиях и не просит выбрать план, "
+    "используй selected_option=none. "
+    "Если человек просит не ухудшать район относительно его плана, не выбирай "
+    "вариант с отрицательной разницей для этого района. Верни только JSON-объект "
+    "с полями selected_option и fact_ids. selected_option: current, one_change, "
+    "optimum или none. fact_ids: от 2 до 5 разных ID из candidates, которые прямо "
+    "отвечают на вопрос. Не добавляй текст, числа или другие поля."
+)
+
+
+def _advice_facts(options, indicator_names=None):
+    """Offer only simulator-derived statements for the model to cite."""
+    current = options[0]["result"]
+    facts = {}
+    labels = {option["id"]: option["label"] for option in options}
+    for option in options:
+        oid, result = option["id"], option["result"]
+        score_delta = result["score"] - current["score"]
+        cost_delta = result["cost"] - current["cost"]
+        facts[f"{oid}_overview"] = (
+            f"{labels[oid]}: Score {_fmt(result['score'])} "
+            f"({_fmt_signed(score_delta)} к вашему плану), расходы {result['cost']} "
+            f"({cost_delta:+d}), показателей ниже 40: {result['critical_count']}."
+        )
+        for index, (district, row) in enumerate(result["districts"].items()):
+            base = current["districts"][district]
+            delta = row["score"] - base["score"]
+            facts[f"{oid}_district_{index}"] = (
+                f"{labels[oid]}: район {district} — {_fmt(row['score'])}, "
+                f"{_fmt_signed(delta)} к вашему плану."
+            )
+            if oid == "current":
+                continue
+            for indicator, value in row["indicators"].items():
+                difference = value - base["indicators"][indicator]
+                if abs(difference) >= 1e-9:
+                    name = (indicator_names or {}).get(indicator, indicator)
+                    facts[f"{oid}_indicator_{index}_{indicator}"] = (
+                        f"{labels[oid]}: показатель {name} ({indicator}) в районе {district} "
+                        f"{_fmt(value)}, {_fmt_signed(difference)} к вашему плану."
+                    )
+        if oid == "current":
+            continue
+        old = {(item["measure_id"], item.get("district"))
+               for item in options[0]["decisions"]}
+        new = {(item["measure_id"], item.get("district"))
+               for item in option["decisions"]}
+        removed = ", ".join(f"{mid}/{district or 'город'}" for mid, district in sorted(old - new))
+        added = ", ".join(f"{mid}/{district or 'город'}" for mid, district in sorted(new - old))
+        facts[f"{oid}_measures"] = (
+            f"{labels[oid]}: убрать {removed}; добавить {added}."
+            if old != new else f"{labels[oid]}: набор мер совпадает с вашим планом."
+        )
+    return facts
+
+
+def _validate_advice_selection(output, facts):
+    cleaned = output.strip()
+    lines = cleaned.splitlines()
+    if len(lines) >= 3 and lines[0] in ("```json", "```") and lines[-1] == "```":
+        cleaned = "\n".join(lines[1:-1]).strip()
+    chosen = json.loads(cleaned)
+    if not isinstance(chosen, dict) or set(chosen) != {"selected_option", "fact_ids"}:
+        raise ValueError("Unexpected advisor response")
+    oid = chosen["selected_option"]
+    ids = chosen["fact_ids"]
+    if oid not in ("current", "one_change", "optimum", "none"):
+        raise ValueError("Unknown option")
+    if (not isinstance(ids, list) or not 2 <= len(ids) <= 5
+            or len(ids) != len(set(ids))
+            or any(not isinstance(fid, str) or fid not in facts for fid in ids)):
+        raise ValueError("Advisor selected unverified facts")
+    if oid != "none" and not any(fid.startswith(oid + "_") for fid in ids):
+        raise ValueError("Selected option has no evidence")
+    return oid, ids
+
+
+def _advisor_model_selection(question, facts, api_key, model, provider):
+    user_input = json.dumps({"question": question, "candidates": facts},
+                            ensure_ascii=False, sort_keys=True)
+    if provider == "openai":
+        body = _post_json(_OPENAI_API_URL, {
+            "model": model, "instructions": _ADVISOR_INSTRUCTIONS,
+            "input": user_input, "store": False,
+        }, api_key)
+        output = "".join(
+            block.get("text", "")
+            for item in body.get("output", []) if item.get("type") == "message"
+            for block in item.get("content", []) if block.get("type") == "output_text"
+        )
+    else:
+        try:
+            from openai import OpenAI, OpenAIError
+        except ImportError as exc:
+            raise OSError("NVIDIA model client is not installed") from exc
+        try:
+            client = OpenAI(base_url=_NVIDIA_API_BASE_URL,
+                            api_key=api_key, timeout=45.0, max_retries=0)
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": _ADVISOR_INSTRUCTIONS},
+                          {"role": "user", "content": user_input}],
+                max_tokens=256,
+                stream=False,
+            )
+        except OpenAIError as exc:
+            raise OSError("NVIDIA advisor request failed") from exc
+        output = completion.choices[0].message.content
+    if not isinstance(output, str):
+        raise ValueError("Advisor returned no text")
+    return _validate_advice_selection(output, facts)
+
+
+_DISTRICT_STEMS = {"Есиль": "есил", "Алматы": "алмат", "Сарыарка": "сарыарк",
+                   "Байконур": "байконур", "Нура": "нур"}
+
+
+def _mentioned_districts(question, district_names):
+    normalized_question = question.casefold().replace("ь", "").replace("ё", "е")
+    return [district for district in district_names
+            if _DISTRICT_STEMS.get(district, district.casefold()) in normalized_question]
+
+
+def _explicit_no_decline_districts(question, district_names):
+    normalized = question.casefold().replace("ё", "е")
+    if not any(phrase in normalized for phrase in
+               ("не ухудш", "без ухудш", "не сниж", "без сниж", "не потер", "сохран")):
+        return []
+    return _mentioned_districts(question, district_names)
+
+
+def _advice_fallback(question, facts, district_names):
+    """Expose relevant computed comparisons when the optional model is absent."""
+    chosen = [f"{oid}_overview" for oid in ("current", "one_change", "optimum")]
+    for index, district in enumerate(district_names):
+        if district in _mentioned_districts(question, district_names):
+            chosen.extend(f"{oid}_district_{index}"
+                          for oid in ("current", "one_change", "optimum"))
+    return "none", [fid for fid in chosen if fid in facts]
+
+
+def _contradicts_no_decline(question, options, selected_option):
+    if selected_option in ("current", "none"):
+        return False
+    original = options[0]["result"]["districts"]
+    proposed = next(option["result"]["districts"] for option in options
+                    if option["id"] == selected_option)
+    return any(proposed[district]["score"] < original[district]["score"] - 1e-9
+               for district in _explicit_no_decline_districts(question, original))
+
+
+def _fallback_district_summary(question, options):
+    """State only comparisons that hold for both computed alternatives."""
+    current = options[0]["result"]["districts"]
+    statements = []
+    for district in _mentioned_districts(question, current):
+        changes = [option["result"]["districts"][district]["score"]
+                   - current[district]["score"] for option in options[1:]]
+        if all(change < -1e-9 for change in changes):
+            statements.append(f"Оба альтернативных варианта снижают балл района «{district}».")
+        elif all(change > 1e-9 for change in changes):
+            statements.append(f"Оба альтернативных варианта повышают балл района «{district}».")
+    return " ".join(statements)
+
+
+def advise(question, options, indicator_names=None):
+    """Interpret a human priority over fixed, verified plans; never change them."""
+    if [option.get("id") for option in options] != ["current", "one_change", "optimum"]:
+        raise ValueError("Expected the three verified scenarios")
+    facts = _advice_facts(options, indicator_names)
+    settings = model_settings()
+    nvidia_key, nvidia_model = settings["NVIDIA_API_KEY"], settings["NVIDIA_MODEL"]
+    openai_key, openai_model = settings["OPENAI_API_KEY"], settings["OPENAI_MODEL"]
+    if nvidia_key and nvidia_model:
+        api_key, model, provider = nvidia_key, nvidia_model, "nvidia"
+    elif openai_key and openai_model:
+        api_key, model, provider = openai_key, openai_model, "openai"
+    else:
+        api_key = model = provider = None
+    source = "computed_facts"
+    district_names = tuple(options[0]["result"]["districts"])
+    selected_option, selected_facts = _advice_fallback(question, facts, district_names)
+    if api_key and model:
+        try:
+            proposed_option, proposed_facts = _advisor_model_selection(
+                question, facts, api_key, model, provider)
+            if _contradicts_no_decline(question, options, proposed_option):
+                raise ValueError("Advisor contradicts an explicit district constraint")
+            selected_option, selected_facts = proposed_option, proposed_facts
+            source = "model"
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            pass
+    label = next((option["label"] for option in options
+                  if option["id"] == selected_option), None)
+    intro = (f"С учётом вашего вопроса рассмотрите вариант «{label}». "
+             if label else "Сравните рассчитанные варианты с вашим приоритетом. ")
+    if source == "computed_facts":
+        summary = _fallback_district_summary(question, options)
+        if summary:
+            intro += summary + " "
+    text = intro.strip() + "\n" + "\n".join(f"• {facts[fid]}" for fid in selected_facts)
+    answer = {"text": text, "source": source, "selected_option": selected_option}
+    if source == "model":
+        answer.update(provider=provider, model=model)
+    else:
+        answer["reason"] = "model_unavailable" if api_key and model else "model_not_configured"
     return answer
