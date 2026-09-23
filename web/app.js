@@ -471,7 +471,13 @@ function displayExplanation(explanation) {
   else source.textContent = "Пояснение к результату сервера";
   const content = typeof explanation === "string" ? explanation : explanation?.text;
   if (typeof content !== "string" || !content.trim()) { host.append(node("p", "Советник сейчас недоступен. Результаты расчёта сохранены в докладе.")); return; }
-  content.trim().split(/\n+/).filter(Boolean).forEach((line) => {
+  // The fallback is a server-produced fact string. Localize labels and decimal
+  // punctuation only; the simulator's values and Score are displayed unchanged.
+  const displayText = explanation?.source === "computed_facts"
+    ? content.replace(/\b[A-Z][0-9]\b/g, (key) => state.catalog?.indicators?.[key]?.name || key)
+      .replace(/(\d)\.(\d)/g, "$1,$2")
+    : content;
+  displayText.trim().split(/\n+/).filter(Boolean).forEach((line) => {
     const match = line.match(/^(Сильные стороны|Риски|Компромиссы):\s*(.*)$/);
     if (match) {
       const section = node("section", null, "explanation-block");
