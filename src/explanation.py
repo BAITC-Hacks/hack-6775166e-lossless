@@ -49,8 +49,14 @@ def _facts(result):
     district, values = min(
         result["districts"].items(), key=lambda item: (item[1]["score"], item[0])
     )
+    indicator, level = min(
+        values["indicators"].items(), key=lambda item: (item[1], item[0])
+    )
     risks = {
-        "risk_weakest": f"Самый низкий районный Score остаётся у района {district}: {_fmt(values['score'])}."
+        "risk_residual": (
+            f"Район с самым низким Score — {district} ({_fmt(values['score'])}); "
+            f"его самый слабый показатель — {indicator} ({_fmt(level)})."
+        )
     }
     negatives = sorted(
         ((delta, district, indicator) for district, row in result["deltas"].items()
@@ -64,12 +70,13 @@ def _facts(result):
         )
     if result.get("critical_count", 0):
         risks["risk_critical"] = (
-            f"После решений остаётся критических показателей ниже 40: {result['critical_count']}."
+            f"После решений остаётся критических показателей: {result['critical_count']}."
         )
 
     tradeoffs = {
         "tradeoff_budget": (
-            f"Выбрано мер на {result['cost']} из бюджета 100; остаток "
+            f"Выбрано мер на {result['cost']} из бюджета "
+            f"{result['cost'] + result['remaining_budget']}; остаток "
             f"{result['remaining_budget']} не увеличивает Score."
         )
     }
@@ -85,6 +92,11 @@ def _facts(result):
 
 def _render(facts, selections):
     names = {"strengths": "Сильные стороны", "risks": "Риски", "tradeoffs": "Компромиссы"}
+    # Required computed facts remain visible even if the model omits their IDs.
+    selections = {section: list(keys) for section, keys in selections.items()}
+    for section, required in (("risks", "risk_residual"), ("tradeoffs", "tradeoff_budget")):
+        if required not in selections[section]:
+            selections[section].insert(0, required)
     return "\n".join(
         f"{names[section]}: " + " ".join(facts[section][key] for key in selections[section])
         for section in names

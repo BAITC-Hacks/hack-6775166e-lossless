@@ -6,7 +6,7 @@ const API = { catalog: "/api/catalog", simulate: "/api/simulate", optimize: "/ap
 const state = { catalog: null, measures: [], decisions: [], category: "Все", stage: "briefing", result: null, proposal: null, pending: null, busy: null, revision: 0 };
 const $ = (id) => document.getElementById(id);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
-const format = (value, digits = 2) => finite(value) ? value.toLocaleString("ru-RU", { minimumFractionDigits: digits, maximumFractionDigits: digits }) : "—";
+const format = (value, digits = 2) => finite(value) ? value.toFixed(digits).replace(".", ",") : "—";
 const categoryIcons = { "Транспорт": "bus", "Экология": "leaf", "Соцсфера": "school", "Безопасность": "shield", "Сервисы": "service" };
 const categoryLabels = { "Соцсфера": "Соцсфера", "Экология": "Экология", "Сервисы": "Сервисы" };
 const measureById = (id) => state.measures.find((measure) => measure.id === id);
@@ -94,6 +94,8 @@ function setDecisions(decisions, message) {
   state.decisions = decisions.map((item) => ({ measure_id: item.measure_id, district: item.district }));
   state.revision += 1;
   state.result = null;
+  state.proposal = null;
+  $("comparison").hidden = true;
   $("plan-errors").hidden = true;
   syncNavigation();
   renderPlanner();
@@ -244,6 +246,8 @@ function updateBudget() {
   $("submit-plan").disabled = !!state.busy || errors.length > 0;
   $("submit-plan").querySelector("span").textContent = state.busy === "simulate" ? "Считаем последствия…" : "Подписать распоряжения";
   $("suggest-plan").disabled = !!state.busy;
+  $("compare-plan").disabled = !!state.busy || !state.result;
+  $("compare-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "Сравнить с рекомендацией";
   $("suggest-plan").querySelector("span").textContent = state.busy === "optimize" ? "Советник готовит план…" : "План советника";
   $("sign-hint").textContent = state.busy === "simulate" ? "Проверяем пакет и готовим итоговый доклад" : state.busy === "optimize" ? "Советник готовит предложение. Ваш пакет сохранён." : missing > 0 ? `Добавьте ещё ${missing} ${missing === 1 ? "распоряжение" : missing < 5 ? "распоряжения" : "распоряжений"}` : errors[0] || "Пакет готов к проверке и расчёту";
 }
@@ -393,7 +397,8 @@ async function calculate() {
   if (errors.length) { showPlanErrors(errors); return; }
   const revision = state.revision;
   const decisions = state.decisions.map((item) => ({ ...item }));
-  state.result = null; syncNavigation(); notice(""); $("plan-errors").hidden = true;
+  state.result = null; state.proposal = null; $("comparison").hidden = true;
+  syncNavigation(); notice(""); $("plan-errors").hidden = true;
   setBusy("simulate"); announce("Проверяем распоряжения и готовим доклад.");
   try {
     const result = await requestJson(API.simulate, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decisions }) });
@@ -415,6 +420,46 @@ function validateProposal(result) {
   if (validate(decisions, true).length) throw new Error("Invalid proposal");
   return decisions;
 }
+function signed(value) { return finite(value) ? `${value >= 0 ? "+" : ""}${format(value)}` : "—"; }
+function renderComparison(current, proposed, decisions) {
+  const host = $("comparison");
+  host.hidden = !current;
+  $("suggestion-dialog").classList.toggle("has-comparison", Boolean(current));
+  if (!current) return;
+  $("comparison-gap").textContent = `${signed(proposed.score - current.score)} к вашему Score`;
+  const summary = $("comparison-summary"); summary.replaceChildren();
+  for (const [label, result] of [["Ваш план", current], ["Рекомендация", proposed]]) {
+    const affected = districtNames().filter((name) => Object.values(result.deltas?.[name] || {}).some((delta) => finite(delta) && delta !== 0)).length;
+    const card = node("div", null, "comparison-stat");
+    card.append(node("small", label), node("strong", format(result.score)), node("span", `Стоимость ${format(result.cost, 0)} / ${format(budget(), 0)} · затронуто районов: ${affected}`));
+    summary.append(card);
+  }
+  const rows = $("comparison-districts"); rows.replaceChildren();
+  const userBetter = [], proposedBetter = [];
+  districtNames().forEach((name) => {
+    const first = current.districts?.[name]?.score;
+    const second = proposed.districts?.[name]?.score;
+    const baseline = state.catalog.districts[name]?.score;
+    const difference = finite(first) && finite(second) ? second - first : null;
+    if (finite(difference) && difference > 0.00001) proposedBetter.push(name);
+    if (finite(difference) && difference < -0.00001) userBetter.push(name);
+    const scoreWithChange = (score) => finite(score) && finite(baseline) ? `${format(score)} (${signed(score - baseline)})` : format(score);
+    const row = node("tr");
+    const heading = node("th", name); heading.scope = "row";
+    row.append(heading, node("td", scoreWithChange(first)), node("td", scoreWithChange(second)), node("td", signed(difference), finite(difference) && difference < 0 ? "comparison-negative" : "comparison-positive"));
+    rows.append(row);
+  });
+  const tradeoffs = $("comparison-tradeoffs"); tradeoffs.replaceChildren();
+  if (finite(current.cost) && finite(proposed.cost)) {
+    const costDifference = proposed.cost - current.cost;
+    tradeoffs.append(node("p", costDifference === 0 ? "Оба плана тратят одинаковый бюджет." : `Рекомендация тратит на ${format(Math.abs(costDifference), 0)} ед. ${costDifference > 0 ? "больше" : "меньше"}.`));
+  }
+  tradeoffs.append(node("p", proposedBetter.length ? `Выше районный балл: ${proposedBetter.join(", ")}.` : "Нет районов, где рекомендация повышает районный балл относительно вашего плана."));
+  tradeoffs.append(node("p", userBetter.length ? `Ваш план сохраняет более высокий районный балл: ${userBetter.join(", ")}.` : "Нет районов, где ваш план даёт более высокий районный балл."));
+  if (finite(current.critical_count) && finite(proposed.critical_count)) tradeoffs.append(node("p", `Показателей ниже 40: ваш план — ${format(current.critical_count, 0)}, рекомендация — ${format(proposed.critical_count, 0)}.`));
+  const describe = (items) => items.map(({ measure_id, district }) => `${measure_id} / ${district || "город"}`).join(" · ");
+  $("comparison-measures").textContent = `Ваш план: ${describe(state.decisions)}. Рекомендация: ${describe(decisions)}.`;
+}
 async function suggestPlan() {
   if (state.busy) return;
   notice(""); state.proposal = null; setBusy("optimize"); announce("Советник ищет рассчитанный план. Ваш пакет остаётся у вас.");
@@ -422,6 +467,7 @@ async function suggestPlan() {
     const result = await requestJson(API.optimize);
     const decisions = validateProposal(result);
     state.proposal = { result, decisions };
+    renderComparison(state.result, result, decisions);
     const summary = $("suggestion-summary"); summary.replaceChildren();
     const score = node("div", "Score по модели"); score.prepend(node("strong", format(result.score)));
     const cost = node("div", "единиц бюджета"); cost.prepend(node("strong", format(result.cost, 0))); summary.append(score, cost);
@@ -432,9 +478,11 @@ async function suggestPlan() {
       const copy = node("div"); copy.append(node("strong", `${measure.id} · ${measure.name}`), node("small", `${decision.district || "Весь город"} · ${format(measure.cost, 0)} ед.`));
       row.append(node("span", String(index + 1).padStart(2, "0"), "decision-number"), copy); host.append(row);
     });
+    $("suggestion-summary").hidden = Boolean(state.result);
     $("suggestion-dialog").showModal();
   } catch (error) {
     console.error("Proposal request failed", error);
+    if (state.stage === "report") setStage("planner");
     notice("Советник сейчас недоступен. Ваши распоряжения сохранены; можно продолжить свой план.", true);
   } finally { setBusy(null); }
 }
@@ -470,6 +518,7 @@ $("retry-catalog").addEventListener("click", start);
 $("confirm-measure").addEventListener("click", confirmMeasure);
 $("submit-plan").addEventListener("click", calculate);
 $("suggest-plan").addEventListener("click", suggestPlan);
+$("compare-plan").addEventListener("click", () => { if (state.result) suggestPlan(); });
 $("mobile-plan-jump").addEventListener("click", () => {
   const title = $("portfolio-title");
   title.setAttribute("tabindex", "-1");
