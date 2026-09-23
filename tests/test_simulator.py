@@ -66,6 +66,8 @@ class SimulatorTest(unittest.TestCase):
                 self.assertFalse(result["valid"])
                 self.assertTrue(result["errors"])
                 self.assertNotIn("score", result)
+                self.assertAlmostEqual(result["base_score"], 52.55768, places=8)
+        self.assertAlmostEqual(simulate(None)["base_score"], 52.55768, places=8)
 
     def test_scope_and_same_district_conflicts(self):
         result = simulate(pick(("M4", "Сарыарка"), ("M7", "Нура"), ("M10", "Нура"), ("M12", None), ("M9", "Нура")))

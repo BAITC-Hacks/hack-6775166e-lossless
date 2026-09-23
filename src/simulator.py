@@ -89,8 +89,9 @@ def simulate(decisions):
     measures require district=None (or an omitted district key).
     """
     errors = []
+    base_score = _number(_score(_base_grid())[0])
     if not isinstance(decisions, list):
-        return {"valid": False, "errors": ["Решения должны быть списком из пяти объектов."], "cost": 0, "remaining_budget": BUDGET}
+        return {"valid": False, "errors": ["Решения должны быть списком из пяти объектов."], "cost": 0, "remaining_budget": BUDGET, "base_score": base_score}
     if len(decisions) != 5:
         errors.append("Нужно выбрать ровно пять мероприятий.")
     normalized = []
@@ -127,7 +128,7 @@ def simulate(decisions):
     if cost > BUDGET:
         errors.append(f"Бюджет превышен: {cost} > {BUDGET}.")
     if errors:
-        return {"valid": False, "errors": errors, "cost": cost, "remaining_budget": BUDGET - cost}
+        return {"valid": False, "errors": errors, "cost": cost, "remaining_budget": BUDGET - cost, "base_score": base_score}
 
     grid = _base_grid()
     base = _base_grid()
