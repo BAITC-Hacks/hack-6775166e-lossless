@@ -362,9 +362,9 @@ _ADVISOR_INSTRUCTIONS = (
     "Если человек спрашивает только об отличиях и не просит выбрать план, "
     "используй selected_option=none. "
     "Если человек просит не ухудшать район относительно его плана, не выбирай "
-    "вариант с отрицательной разницей для этого района. Верни только JSON-объект "
-    "с полями selected_option и fact_ids. selected_option: current, one_change, "
-    "optimum или none. fact_ids: от 2 до 5 разных ID из candidates, которые прямо "
+    "вариант с отрицательной разницей для этого района. Выбирай selected_option "
+    "только из allowed_options, уже проверенных программой. Верни только JSON-объект "
+    "с полями selected_option и fact_ids. fact_ids: от 2 до 5 разных ID из candidates, которые прямо "
     "отвечают на вопрос. Если selected_option не none, включи минимум один fact_id "
     "с префиксом выбранного варианта. Не добавляй текст, числа или другие поля."
 )
@@ -416,7 +416,7 @@ def _advice_facts(options, indicator_names=None):
     return facts
 
 
-def _validate_advice_selection(output, facts):
+def _validate_advice_selection(output, facts, allowed_options):
     cleaned = output.strip()
     lines = cleaned.splitlines()
     if len(lines) >= 3 and lines[0] in ("```json", "```") and lines[-1] == "```":
@@ -426,7 +426,7 @@ def _validate_advice_selection(output, facts):
         raise ValueError("Unexpected advisor response")
     oid = chosen["selected_option"]
     ids = chosen["fact_ids"]
-    if oid not in ("current", "one_change", "optimum", "none"):
+    if oid not in allowed_options:
         raise ValueError("Unknown option")
     if (not isinstance(ids, list) or not 2 <= len(ids) <= 5
             or len(ids) != len(set(ids))
@@ -437,13 +437,13 @@ def _validate_advice_selection(output, facts):
     return oid, ids
 
 
-def _advisor_model_selection(question, facts, api_key, model, provider):
-    user_input = json.dumps({"question": question, "candidates": facts},
+def _advisor_model_selection(question, facts, allowed_options, api_key, model, provider):
+    user_input = json.dumps({"question": question, "allowed_options": allowed_options,
+                             "candidates": facts},
                             ensure_ascii=False, sort_keys=True)
     if provider == "openai":
         properties = {
-            "selected_option": {"type": "string", "enum":
-                                ["current", "one_change", "optimum", "none"]},
+            "selected_option": {"type": "string", "enum": allowed_options},
             "fact_ids": {"type": "array", "items": {"type": "string", "enum": sorted(facts)},
                          "minItems": 2, "maxItems": 5},
         }
@@ -478,7 +478,7 @@ def _advisor_model_selection(question, facts, api_key, model, provider):
         output = completion.choices[0].message.content
     if not isinstance(output, str):
         raise ValueError("Advisor returned no text")
-    return _validate_advice_selection(output, facts)
+    return _validate_advice_selection(output, facts, allowed_options)
 
 
 _DISTRICT_STEMS = {"Есиль": "есил", "Алматы": "алмат", "Сарыарка": "сарыарк",
@@ -494,7 +494,8 @@ def _mentioned_districts(question, district_names):
 def _explicit_no_decline_districts(question, district_names):
     normalized = question.casefold().replace("ё", "е")
     if not any(phrase in normalized for phrase in
-               ("не ухудш", "без ухудш", "не сниж", "без сниж", "не потер", "сохран")):
+               ("не ухудш", "не хочу ухудш", "не хотим ухудш", "без ухудш",
+                "не сниж", "без сниж", "не потер", "сохран")):
         return []
     return _mentioned_districts(question, district_names)
 
@@ -517,6 +518,12 @@ def _contradicts_no_decline(question, options, selected_option):
                     if option["id"] == selected_option)
     return any(proposed[district]["score"] < original[district]["score"] - 1e-9
                for district in _explicit_no_decline_districts(question, original))
+
+
+def _admissible_advice_options(question, options):
+    """Restrict the model to plans satisfying explicit district priorities."""
+    return [option["id"] for option in options
+            if not _contradicts_no_decline(question, options, option["id"])] + ["none"]
 
 
 def _fallback_district_summary(question, options):
@@ -549,11 +556,12 @@ def advise(question, options, indicator_names=None):
         api_key = model = provider = None
     source = "computed_facts"
     district_names = tuple(options[0]["result"]["districts"])
+    allowed_options = _admissible_advice_options(question, options)
     selected_option, selected_facts = _advice_fallback(question, facts, district_names)
     if api_key and model:
         try:
             proposed_option, proposed_facts = _advisor_model_selection(
-                question, facts, api_key, model, provider)
+                question, facts, allowed_options, api_key, model, provider)
             if _contradicts_no_decline(question, options, proposed_option):
                 raise ValueError("Advisor contradicts an explicit district constraint")
             selected_option, selected_facts = proposed_option, proposed_facts
