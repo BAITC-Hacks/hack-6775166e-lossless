@@ -985,7 +985,7 @@ function renderAdvisorAnswer(answer) {
         $("suggestion-title").textContent = id === "optimum" ? "Оптимум заданной модели." : "Одна замена. Проверенный результат.";
         $("suggestion-description").textContent = id === "optimum"
           ? "Лучший допустимый план по Score среди всех комбинаций пяти мер. Сравните районы перед выбором."
-          : "Лучшая допустимая замена одного распоряжения по Score. Сравните районы перед выбором.";
+          : "Лучшая допустимая замена одной меры по Score. Сравните районы перед выбором.";
         showSuggestion(option.result, option.decisions);
       });
       card.append(button);
