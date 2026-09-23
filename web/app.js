@@ -342,7 +342,10 @@ function finishMeasureDrag(event, cancelled = false) {
     setTimeout(() => { delete drag.source.dataset.justDragged; }, 450);
   }
   if (event && !cancelled) previewDrop(drag, event.clientX, event.clientY);
-  const target = cancelled ? null : drag.target;
+  // A slight finger slip should behave like a tap, even if the board appeared
+  // underneath the finger while it was still near the source card.
+  const shortTravel = !cancelled && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < (drag.pointerType === "mouse" ? 18 : 28);
+  const target = cancelled || shortTravel ? null : drag.target;
   const error = cancelled ? "" : dropError(drag.measure, target);
   document.body.classList.remove("is-dragging-measure");
   $("drop-board").hidden = true;
@@ -361,7 +364,8 @@ function finishMeasureDrag(event, cancelled = false) {
       setTimeout(() => drag.ghost.remove(), 180);
     } else drag.ghost.remove();
   }
-  if (!cancelled && error) { notice(error, true); dragMessage(error, true); }
+  if (shortTravel) { syncScene(); openMeasure(drag.measure.id); }
+  else if (!cancelled && error) { notice(error, true); dragMessage(error, true); }
   else if (!cancelled && target) {
     const decision = { measure_id: drag.measure.id, district: target.kind === "city" ? null : target.name };
     const next = [...state.decisions, decision];
